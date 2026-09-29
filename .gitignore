@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.angular/
+.superpowers/
+*.tsbuildinfo
+*.log
+.env
+.env.*
+!.env.example

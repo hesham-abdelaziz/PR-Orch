@@ -1,0 +1,19 @@
+{
+  "name": "pr-review-orchestrator",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.15"
+  },
+  "scripts": {
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:contracts": "npm --workspace @pr-orchestrator/contracts run test",
+    "build": "npm --workspace @pr-orchestrator/contracts run build && npm --workspace @pr-orchestrator/api run build && npm --workspace @pr-orchestrator/web run build",
+    "e2e": "npm run e2e --workspaces --if-present"
+  }
+}
