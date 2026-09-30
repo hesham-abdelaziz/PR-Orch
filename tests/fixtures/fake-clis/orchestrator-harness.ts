@@ -334,7 +334,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const scratchRoot = await mkdtemp(join(tmpdir(), 'orchestrator-test-'));
   let tick = 0;
   const clock = () => new Date(Date.parse('2026-09-29T10:00:00.000Z') + tick++ * 1_000);
-  const events = new ReviewEventsService(clock);
+  const events = new ReviewEventsService(repository, clock);
   const log: string[] = [];
   const jobStateChanged = events.jobStateChanged.bind(events);
   events.jobStateChanged = (reviewId, state) => {

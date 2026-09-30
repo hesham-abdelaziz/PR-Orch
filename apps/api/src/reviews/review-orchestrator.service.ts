@@ -191,6 +191,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         cleanupPending: false,
         overallRisk: null,
         findingCount: null,
+        eventSequence: 0,
         createdAt: now,
         updatedAt: now,
         completedAt: null,
@@ -243,6 +244,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const done = await this.stateMachine.transition(reviewId, 'cancelled');
       if (done.applied) this.events.jobStateChanged(reviewId, 'cancelled');
       await this.cleanupWorkspace(reviewId, record.workspaceId);
+      await this.events.flush(reviewId);
     }
 
     return this.snapshot(reviewId);
@@ -273,6 +275,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     } finally {
       await this.cleanupWorkspace(ctx.jobId, ctx.workspaceId);
       if (ctx.scratchDir) await rm(ctx.scratchDir, { recursive: true, force: true }).catch(() => undefined);
+      await this.events.flush(ctx.jobId);
     }
   }
 
@@ -304,7 +307,6 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     const reviewerWarnings = outcomes.flatMap((outcome) => outcome.warnings);
     ctx.warnings = [...ctx.warnings, ...reviewerWarnings];
     ctx.exclusions = mergeExclusions(ctx.exclusions, outcomes.flatMap((outcome) => outcome.exclusions));
-    for (const warning of reviewerWarnings) this.events.warning(ctx.jobId, 'reviewer_partial', warning);
 
     const candidates = outcomes.flatMap((outcome) => outcome.findings);
     await this.repository.saveCandidates(
@@ -322,6 +324,9 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       { warnings: ctx.warnings, exclusions: ctx.exclusions },
       this.clock().toISOString(),
     );
+    // Emitted only after the warnings are persisted, so a snapshot taken at a
+    // later sequence always contains them.
+    for (const warning of reviewerWarnings) this.events.warning(ctx.jobId, 'reviewer_partial', warning);
 
     const verified = await this.verify(ctx, record, prepared, candidates, reviewerWarnings);
     if (!verified) return;

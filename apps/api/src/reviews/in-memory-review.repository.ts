@@ -76,9 +76,22 @@ export class InMemoryReviewRepository implements ReviewRepository {
     const job = this.jobs.get(jobId);
     if (!job) return Promise.resolve(null);
 
-    Object.assign(job, clone(patch), { updatedAt: at });
+    Object.assign(job, withoutSequence(clone(patch)), { updatedAt: at });
 
     return Promise.resolve(clone(job));
+  }
+
+  allocateEventSequence(jobId: string): Promise<number | null> {
+    const job = this.jobs.get(jobId);
+    if (!job) return Promise.resolve(null);
+
+    job.eventSequence += 1;
+
+    return Promise.resolve(job.eventSequence);
+  }
+
+  getEventSequence(jobId: string): Promise<number | null> {
+    return Promise.resolve(this.jobs.get(jobId)?.eventSequence ?? null);
   }
 
   saveRun(run: ReviewerRunRecord): Promise<void> {
@@ -154,7 +167,7 @@ export class InMemoryReviewRepository implements ReviewRepository {
   }
 
   private apply(job: ReviewJobRecord, to: ReviewJobRecord['state'], at: string, patch?: JobPatch) {
-    Object.assign(job, patch ? clone(patch) : {}, {
+    Object.assign(job, patch ? withoutSequence(clone(patch)) : {}, {
       state: to,
       updatedAt: at,
       completedAt: isTerminal(to) ? at : job.completedAt,
@@ -185,6 +198,13 @@ export class InMemoryReviewRepository implements ReviewRepository {
 
     return true;
   }
+}
+
+/** Only `allocateEventSequence` may move the counter, so a patch can never rewind it. */
+function withoutSequence(patch: JobPatch): JobPatch {
+  const { eventSequence: _ignored, ...rest } = patch as JobPatch & { eventSequence?: number };
+
+  return rest;
 }
 
 function encodeCursor(job: ReviewJobRecord): string {

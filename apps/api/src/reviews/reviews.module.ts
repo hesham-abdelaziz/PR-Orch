@@ -23,8 +23,8 @@ import { ReviewsController } from './reviews.controller.js';
   imports: [ProvidersModule, ReportsModule],
   controllers: [ReviewsController],
   providers: [
-    // Factory: the class takes an optional clock, which Nest must not try to inject.
-    { provide: ReviewEventsService, useFactory: (): ReviewEventsService => new ReviewEventsService() },
+    // Sequences are allocated through REVIEW_REPOSITORY; the clock token is optional.
+    ReviewEventsService,
     ProviderOutputParser,
     FindingNormalizerService,
     ReviewerPromptBuilder,

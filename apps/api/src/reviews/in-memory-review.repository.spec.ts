@@ -247,3 +247,40 @@ describe('InMemoryReviewRepository', () => {
     expect((await repository.listJobsPendingCleanup()).map((job) => job.id)).toEqual([created.job.id]);
   });
 });
+
+describe('InMemoryReviewRepository event sequence', () => {
+  it('allocates unique, gap-free sequence numbers atomically per job', async () => {
+    const repository = new InMemoryReviewRepository();
+    const created = await repository.createJob(jobRecord());
+    if (!created.created) throw new Error('unreachable');
+    const id = created.job.id;
+
+    expect(await repository.getEventSequence(id)).toBe(0);
+    const allocated = await Promise.all(Array.from({ length: 20 }, () => repository.allocateEventSequence(id)));
+
+    expect([...allocated].sort((left, right) => (left ?? 0) - (right ?? 0))).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 1),
+    );
+    expect(await repository.getEventSequence(id)).toBe(20);
+  });
+
+  it('keeps the sequence after the job becomes terminal and ignores it in patches', async () => {
+    const repository = new InMemoryReviewRepository();
+    const created = await repository.createJob(jobRecord());
+    if (!created.created) throw new Error('unreachable');
+    const id = created.job.id;
+    await repository.allocateEventSequence(id);
+    await repository.transitionJob({ jobId: id, expectedFrom: 'queued', to: 'failed', at: '2026-09-29T10:01:00.000Z' });
+    await repository.updateJob(id, { eventSequence: 0 } as never, '2026-09-29T10:02:00.000Z');
+
+    expect(await repository.getEventSequence(id)).toBe(1);
+    expect(await repository.allocateEventSequence(id)).toBe(2);
+  });
+
+  it('returns null for an unknown job', async () => {
+    const repository = new InMemoryReviewRepository();
+
+    expect(await repository.getEventSequence(uuid())).toBeNull();
+    expect(await repository.allocateEventSequence(uuid())).toBeNull();
+  });
+});

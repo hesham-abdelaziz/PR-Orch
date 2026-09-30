@@ -62,14 +62,31 @@ export interface HistoryPage {
 }
 
 /**
- * Persistence port implemented by the platform with SQLite. Two operations
+ * Durable per-job SSE sequence counter (`review_jobs.event_sequence`). The
+ * value only ever increases and outlives the job becoming terminal and the
+ * process restarting, so a reconnecting client never sees a sequence regress.
+ */
+export interface EventSequenceStore {
+  /**
+   * Atomically increments the job's counter and returns the new value, e.g.
+   * `UPDATE review_jobs SET event_sequence = event_sequence + 1 WHERE id = ?
+   * RETURNING event_sequence`. Returns null when the job does not exist.
+   */
+  allocateEventSequence(jobId: string): Promise<number | null>;
+  /** The last allocated value (0 before the first event); null when the job does not exist. */
+  getEventSequence(jobId: string): Promise<number | null>;
+}
+
+/**
+ * Persistence port implemented by the platform with SQLite. These operations
  * must be atomic in the database, not merely in memory:
  *
  * - `createJob`: at most one non-terminal job may exist (partial unique index).
  * - `transitionJob` / `completeJob`: compare-and-set on `state`, with the
  *   report insert and state change in one transaction.
+ * - `allocateEventSequence`: a single atomic increment-and-return.
  */
-export interface ReviewRepository {
+export interface ReviewRepository extends EventSequenceStore {
   /**
    * Inserts the job and its initial (queued) runs in one transaction, so a
    * reader never sees a job without its reviewers. Loses cleanly, inserting

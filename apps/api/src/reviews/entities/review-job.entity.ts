@@ -39,6 +39,12 @@ export interface ReviewJobRecord {
   /** Denormalized from the report for history filtering; null until completed. */
   overallRisk: OverallRisk | null;
   findingCount: number | null;
+  /**
+   * Last SSE event sequence allocated for this job (0 before the first event).
+   * Changed only through `ReviewRepository.allocateEventSequence`, never by a
+   * `JobPatch`.
+   */
+  eventSequence: number;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

@@ -825,4 +825,86 @@ describe('ReviewOrchestratorService — events', () => {
     expect(received.at(-1)?.type).toBe('job.state_changed');
     expect(h.events.listenerCount(job.id)).toBe(0);
   });
+
+  const loadFrom = (h: Harness, id: string) => async () => {
+    const record = await h.repository.getJob(id);
+
+    return record ? toReviewJob(record, await h.repository.listRuns(id)) : null;
+  };
+
+  it.each([
+    ['completed', {}],
+    ['failed', { scripts: { codex: (request: Parameters<Script>[0]) => failed('codex', request, 'boom'), gemini: (request: Parameters<Script>[0]) => failed('gemini', request, 'boom') } }],
+  ] as const)('gives a client reconnecting after a %s review the final persisted sequence', async (state, options) => {
+    const h = await harness(state === 'completed' ? twoReviewers() : (options as HarnessOptions));
+    const job = await h.orchestrator.createReview(h.request());
+    const live: Array<{ type: string; sequence: number }> = [];
+    h.events.stream(job.id, loadFrom(h, job.id)).subscribe({ next: (event) => live.push(event) });
+    await h.orchestrator.awaitCompletion(job.id);
+    expect((await h.repository.getJob(job.id))?.state).toBe(state);
+
+    const late: Array<{ type: string; sequence: number }> = [];
+    let closed = false;
+    h.events.stream(job.id, loadFrom(h, job.id)).subscribe({ next: (event) => late.push(event), complete: () => { closed = true; } });
+    await waitFor(() => closed);
+
+    const finalSequence = live.at(-1)?.sequence ?? 0;
+    expect(finalSequence).toBeGreaterThan(1);
+    expect(await h.repository.getEventSequence(job.id)).toBe(finalSequence);
+    expect(late).toEqual([expect.objectContaining({ type: 'job.snapshot', sequence: finalSequence })]);
+    expect(h.events.trackedReviewCount()).toBe(0);
+  });
+
+  it('gives a client reconnecting after a cancelled review the final persisted sequence', async () => {
+    const h = await harness({ scripts: { codex: hangUntilAborted.bind(null, 'codex'), gemini: hangUntilAborted.bind(null, 'gemini') } });
+    const job = await h.orchestrator.createReview(h.request());
+    await waitFor(() => h.providers.adapters.codex.calls.length > 0);
+    await h.orchestrator.cancelReview(job.id);
+    await h.orchestrator.awaitCompletion(job.id);
+
+    const late: Array<{ type: string; sequence: number }> = [];
+    h.events.stream(job.id, loadFrom(h, job.id)).subscribe({ next: (event) => late.push(event) });
+    await waitFor(() => late.length > 0);
+
+    expect(late[0]).toMatchObject({ type: 'job.snapshot', sequence: await h.repository.getEventSequence(job.id) });
+    expect(late[0]?.sequence).toBeGreaterThan(0);
+  });
+
+  it('continues numbering after a restart instead of starting again at 1', async () => {
+    const repository = new InMemoryReviewRepository();
+    const first = await harness({ ...twoReviewers(), repository });
+    const done = await runToEnd(first);
+    const before = await repository.getEventSequence(done.id);
+
+    const second = await harness({ ...twoReviewers(), repository }); // new process, same database
+    const next = await runToEnd(second);
+    const received: Array<{ sequence: number }> = [];
+    second.events.stream(done.id, loadFrom(second, done.id)).subscribe({ next: (event) => received.push(event) });
+    await waitFor(() => received.length > 0);
+
+    expect(received[0]?.sequence).toBe(before);
+    expect(await repository.getEventSequence(next.id)).toBeGreaterThan(0);
+  });
+
+  it('persists reviewer warnings before announcing them, so a snapshot at that sequence contains them', async () => {
+    const h = await harness({
+      scripts: {
+        codex: (request) => completed('codex', request, reviewerJson()),
+        gemini: (request) => timedOut('gemini', request),
+        claude: verifierAcceptAll,
+      },
+    });
+    const checks: Array<Promise<boolean>> = [];
+    const warning = h.events.warning.bind(h.events);
+    h.events.warning = (reviewId, code, message) => {
+      checks.push(h.repository.getJob(reviewId).then((job) => job?.warnings.includes(message) ?? false));
+      warning(reviewId, code, message);
+    };
+
+    await runToEnd(h);
+
+    expect(checks.length).toBeGreaterThan(0);
+    expect(await Promise.all(checks)).toEqual(checks.map(() => true));
+  });
 });
+

@@ -33,10 +33,18 @@ Overall risk = highest verified severity or `clean`. There are no numeric scores
 | `GET /api/reviews` | 200 `{items:[{review,status,overallRisk,findingCount}], nextCursor}`. Query: `limit` (1–100, default 25), `cursor`, `status`, `risk`, `provider`, `repository`, `from`, `to`, `q`. Unknown keys → 400. |
 | `GET /api/reviews/:reviewId` | 200 `ReviewJob` / 404. |
 | `POST /api/reviews/:reviewId/cancel` | 200 `ReviewJob` (`cancelling` or already terminal; idempotent) / 404. |
-| `GET /api/reviews/:reviewId/events` | SSE. Unnamed messages, `data` = JSON `ReviewEvent`, `id` = sequence. First message is always `job.snapshot`; stream completes after the terminal state. |
+| `GET /api/reviews/:reviewId/events` | SSE. Unnamed messages, `data` = JSON `ReviewEvent`, `id` = sequence. First message is always `job.snapshot`; stream completes after the terminal state. Sequences come from the persisted per-job counter (see *SSE sequences*). |
 | `GET /api/reviews/:reviewId/report.md` | `text/markdown; charset=utf-8`, `attachment`, `nosniff`; 404 unless completed. |
 
 Authentication is the platform’s global guard; nothing here checks sessions.
+
+## SSE sequences
+
+- Every event number is allocated from `review_jobs.event_sequence` through `ReviewRepository.allocateEventSequence` (atomic increment-and-return). The value never decreases: not on reconnect, not after the job is terminal, not after a restart.
+- A subscriber is registered, then reads the persisted sequence `S`, then loads the snapshot. The snapshot carries `S`; buffered events `<= S` are dropped (already reflected), events `> S` follow it. No subscriber ever receives the same or a lower sequence twice.
+- The orchestrator emits an event only **after** persisting the change it announces (reviewer warnings are now emitted after `updateJob`). This is what makes dropping `<= S` safe.
+- Events for one review are numbered and delivered in emission order through a per-review promise chain. In-memory state (listeners, chain) exists only while a review has subscribers or undelivered events; `trackedReviewCount()` exposes it for tests. There is no in-memory counter to lose.
+- If allocation fails (database error) the event is skipped rather than numbered from memory; the client recovers the state from its next snapshot.
 
 ## What the platform (Codex) must supply
 
@@ -58,7 +66,7 @@ Bind these tokens in a module visible to `ReviewsModule`/`ReportsModule` (for ex
 
 TypeORM is not installed on this branch; records are plain shapes in `entities/`. Map them to tables:
 
-- `review_jobs` (`ReviewJobRecord`): `id` PK; `state`; `pull_request` JSON; `main` JSON; `reviewers` JSON; `additional_instructions` NULL; `standards` JSON NULL; `standards_storage_path` NULL; `settings` JSON; `warnings` JSON; `exclusions` JSON; `failure_reason` NULL; `workspace_id` NULL; `cleanup_pending` bool; `overall_risk` NULL; `finding_count` NULL; `created_at`; `updated_at`; `completed_at` NULL. Index `created_at DESC, id DESC` for history paging.
+- `review_jobs` (`ReviewJobRecord`): `id` PK; `state`; **`event_sequence INTEGER NOT NULL DEFAULT 0`** (only changed by `allocateEventSequence`; never by `updateJob`/`transitionJob` patches); `pull_request` JSON; `main` JSON; `reviewers` JSON; `additional_instructions` NULL; `standards` JSON NULL; `standards_storage_path` NULL; `settings` JSON; `warnings` JSON; `exclusions` JSON; `failure_reason` NULL; `workspace_id` NULL; `cleanup_pending` bool; `overall_risk` NULL; `finding_count` NULL; `created_at`; `updated_at`; `completed_at` NULL. Index `created_at DESC, id DESC` for history paging.
 - `reviewer_runs` (`ReviewerRunRecord`): `id` PK; `job_id` FK; `role` (`reviewer`|`verifier`); `selection` JSON; `state`; `started_at`; `completed_at`; `warning`; `attempts`; `sanitized_log` (≤ 4 KiB, redacted); `result` JSON NULL.
 - `candidate_findings`: **PK (`job_id`, `id`)** — candidate ids are content-derived and repeat across jobs; `run_id` FK; `finding` JSON.
 - `final_findings`: **PK (`job_id`, `id`)**; `finding` JSON; `decision` JSON.
@@ -77,6 +85,7 @@ Atomicity the SQLite adapter must provide:
 - `transitionJob`: `UPDATE … WHERE id=? AND state=?` (compare-and-set); `applied:false` when 0 rows changed, returning the current row.
 - `completeJob`: one transaction — CAS `rendering → completed`, insert `reports` and `final_findings`, apply the patch; refuse (`applied:false`) when the job is no longer `rendering`.
 - `listJobsPendingCleanup`: **terminal** jobs with `cleanup_pending = 1`.
+- `allocateEventSequence(jobId)`: `UPDATE review_jobs SET event_sequence = event_sequence + 1 WHERE id = ? RETURNING event_sequence` (SQLite ≥ 3.35), or the equivalent inside one transaction; `null` when no row matched. `getEventSequence(jobId)`: `SELECT event_sequence … WHERE id = ?`, `null` when missing.
 - `queryJobs`: keyset pagination on (`created_at`, `id`) with the documented filters; `status` is derived by `history-status.ts` (`active`, `completed`, `completed_with_warnings`, `failed`, `cancelled`).
 
 Startup: `ReviewOrchestratorService.onApplicationBootstrap` runs recovery (jobs left active become `failed`, or `cancelled` if cancelling; the lock is freed; leftover workspaces are cleaned). Call `app.enableShutdownHooks()` so running reviews are cancelled and provider process trees are killed on exit.
