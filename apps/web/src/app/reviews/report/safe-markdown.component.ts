@@ -15,7 +15,7 @@ function escapeRawHtml(text: string): string {
 
 const parser = new Marked({
   renderer: {
-    html(_token) {
+    html(_token: unknown) {
       // Discard raw HTML tokens at parse time
       return '';
     },
