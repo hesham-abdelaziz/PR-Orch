@@ -143,6 +143,31 @@ describe.each(['claude', 'codex', 'gemini'] as const)('%s adapter contract', (pr
     expect(run?.cwd).toBe(request.workspacePath);
   });
 
+  it('runs in the checkout and grants read access to context directories without write flags', async () => {
+    const harness = createHarness(provider);
+    const contextDirectory = mkdtempSync(join(tmpdir(), 'context-'));
+    const request = harness.request({ readOnlyDirectories: [contextDirectory] });
+
+    await harness.adapter.runReview(request);
+
+    const [run] = harness.kit.readRuns();
+    expect(run?.cwd).toBe(request.workspacePath);
+    const argv = run?.argv ?? [];
+    if (provider === 'claude') expect(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2)).toEqual(['--add-dir', contextDirectory]);
+    if (provider === 'gemini') expect(argv[argv.indexOf('--include-directories') + 1]).toBe(contextDirectory);
+    if (provider === 'codex') expect(argv).not.toContain('--add-dir');
+  });
+
+  it('rejects a relative context directory before spawning', async () => {
+    const harness = createHarness(provider);
+
+    await expect(harness.adapter.runReview(harness.request({ readOnlyDirectories: ['relative/dir'] }))).resolves.toMatchObject({
+      status: 'failed',
+      failure: { kind: 'invalid_request' },
+    });
+    expect(harness.kit.readRuns()).toEqual([]);
+  });
+
   it('forwards only its own credentials and never Azure or session secrets', async () => {
     const harness = createHarness(provider);
     await harness.adapter.runReview(harness.request());

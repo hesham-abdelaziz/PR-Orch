@@ -59,6 +59,7 @@ import { CorrectionPromptBuilder } from './prompts/correction-prompt.builder.js'
 import { ReviewerPromptBuilder } from './prompts/reviewer-prompt.builder.js';
 import { VerifierPromptBuilder } from './prompts/verifier-prompt.builder.js';
 import { assembleVerifiedReport } from './verifier-report.assembler.js';
+import { WorkspaceLayoutError, resolveWorkspaceLayout, type WorkspaceLayout } from './workspace-layout.js';
 
 export const REVIEW_ORCHESTRATOR_OPTIONS = Symbol('REVIEW_ORCHESTRATOR_OPTIONS');
 
@@ -85,6 +86,12 @@ interface Runtime {
   warnings: string[];
   exclusions: CoverageExclusion[];
   done: Promise<void>;
+}
+
+/** A prepared workspace plus its single, validated interpretation. */
+interface ReadyWorkspace {
+  prepared: PreparedWorkspace;
+  layout: WorkspaceLayout;
 }
 
 interface ReviewerOutcome {
@@ -283,8 +290,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     if (!(await this.advance(ctx, 'preparing'))) return;
 
     const record = await this.mustGet(ctx.jobId);
-    const prepared = await this.prepareWorkspace(ctx, record);
-    if (!prepared) return;
+    const ready = await this.prepareWorkspace(ctx, record);
+    if (!ready) return;
 
     ctx.scratchDir = await mkdtemp(join(this.scratchRoot, 'pr-review-'));
     await writeFile(join(ctx.scratchDir, 'reviewer-output.schema.json'), REVIEWER_OUTPUT_JSON_SCHEMA_TEXT, 'utf8');
@@ -292,7 +299,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
     if (!(await this.advance(ctx, 'reviewing'))) return;
 
-    const outcomes = await this.runReviewers(ctx, record, prepared);
+    const outcomes = await this.runReviewers(ctx, record, ready);
     if (ctx.controller.signal.aborted) return this.finishCancelled(ctx);
 
     const succeeded = outcomes.filter((outcome) => outcome.run.state === 'completed');
@@ -328,13 +335,13 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     // later sequence always contains them.
     for (const warning of reviewerWarnings) this.events.warning(ctx.jobId, 'reviewer_partial', warning);
 
-    const verified = await this.verify(ctx, record, prepared, candidates, reviewerWarnings);
+    const verified = await this.verify(ctx, record, ready, candidates, reviewerWarnings);
     if (!verified) return;
 
     await this.render(ctx, record, candidates, verified);
   }
 
-  private async prepareWorkspace(ctx: Runtime, record: ReviewJobRecord): Promise<PreparedWorkspace | null> {
+  private async prepareWorkspace(ctx: Runtime, record: ReviewJobRecord): Promise<ReadyWorkspace | null> {
     let prepared: PreparedWorkspace;
     try {
       prepared = await this.workspace.prepare(
@@ -378,7 +385,17 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       return null;
     }
 
-    return prepared;
+    let layout: WorkspaceLayout;
+    try {
+      layout = resolveWorkspaceLayout(prepared, record.standards ? this.standardsPathOf(record, prepared) : null);
+    } catch (error) {
+      if (!(error instanceof WorkspaceLayoutError)) throw error;
+      await this.fail(ctx, `The prepared workspace layout is invalid: ${safeText(error)}`);
+
+      return null;
+    }
+
+    return { prepared, layout };
   }
 
   // --------------------------------------------------------------- reviewers
@@ -386,14 +403,14 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async runReviewers(
     ctx: Runtime,
     record: ReviewJobRecord,
-    prepared: PreparedWorkspace,
+    ready: ReadyWorkspace,
   ): Promise<ReviewerOutcome[]> {
     const runs = (await this.repository.listRuns(ctx.jobId)).filter((run) => run.role === 'reviewer');
     const limit = Math.min(MAX_REVIEWER_PROCESSES, Math.max(1, record.settings.maxParallelReviewers));
 
     return this.pool(runs, limit, async (run) => {
       try {
-        return await this.runReviewer(ctx, record, prepared, run);
+        return await this.runReviewer(ctx, record, ready, run);
       } catch (error) {
         return this.reviewerFailure(run, `Reviewer failed unexpectedly: ${safeText(error)}`, 'failed');
       }
@@ -403,7 +420,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async runReviewer(
     ctx: Runtime,
     record: ReviewJobRecord,
-    prepared: PreparedWorkspace,
+    ready: ReadyWorkspace,
     initial: ReviewerRunRecord,
   ): Promise<ReviewerOutcome> {
     const selection = initial.selection;
@@ -420,12 +437,12 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
     let run = await this.saveRun(initial, { state: 'running', startedAt: this.now() });
     const adapter = this.providers.getAdapter(selection.provider);
-    const checkout = prepared.checkoutPath ?? prepared.rootPath;
+    const checkout = ready.layout.checkoutRoot;
     const basePrompt = this.reviewerPrompts.build({
       reviewer: selection,
       pullRequest: record.pullRequest,
-      workspace: this.promptWorkspace(prepared, ctx.warnings),
-      standards: this.promptStandards(record, prepared),
+      workspace: this.promptWorkspace(ready, ctx.warnings),
+      standards: this.promptStandards(record, ready),
       ...(record.additionalInstructions ? { additionalInstructions: record.additionalInstructions } : {}),
     });
     const log: string[] = [];
@@ -435,7 +452,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const result = await this.invoke(ctx, adapter, selection.provider, {
         runId: attempt === 1 ? run.id : `${run.id}-c${attempt - 1}`,
         model: selection.model,
-        workspacePath: prepared.rootPath,
+        workspacePath: checkout,
+        readOnlyDirectories: ready.layout.readOnlyDirectories,
         prompt,
         outputSchemaPath: this.schemaPath(ctx, 'reviewer'),
         timeoutMs: record.settings.reviewerTimeoutMs,
@@ -551,13 +569,13 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async verify(
     ctx: Runtime,
     record: ReviewJobRecord,
-    prepared: PreparedWorkspace,
+    ready: ReadyWorkspace,
     candidates: ReviewFinding[],
     reviewerWarnings: string[],
   ): Promise<VerifiedOutcome | null> {
     const verifierRun = (await this.repository.listRuns(ctx.jobId)).find((run) => run.role === 'verifier');
     if (!verifierRun) throw new Error('Verifier run row is missing.');
-    const checkout = prepared.checkoutPath ?? prepared.rootPath;
+    const checkout = ready.layout.checkoutRoot;
     const assembleWith = (output: { summary: string; decisions: never[]; warnings: string[] } | VerifierOutputLike) =>
       assembleVerifiedReport({
         reviewId: ctx.jobId,
@@ -590,8 +608,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     const basePrompt = this.verifierPrompts.build({
       verifier: selection,
       pullRequest: record.pullRequest,
-      workspace: this.promptWorkspace(prepared, prepared.warnings),
-      standards: this.promptStandards(record, prepared),
+      workspace: this.promptWorkspace(ready, ready.prepared.warnings),
+      standards: this.promptStandards(record, ready),
       candidates,
       jobWarnings: reviewerWarnings,
     });
@@ -603,7 +621,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const result = await this.invoke(ctx, adapter, selection.provider, {
         runId: attempt === 1 ? run.id : `${run.id}-c${attempt - 1}`,
         model: selection.model,
-        workspacePath: prepared.rootPath,
+        workspacePath: checkout,
+        readOnlyDirectories: ready.layout.readOnlyDirectories,
         prompt,
         outputSchemaPath: this.schemaPath(ctx, 'verifier'),
         timeoutMs: record.settings.verifierTimeoutMs,
@@ -847,26 +866,29 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     return next;
   }
 
-  private promptWorkspace(prepared: PreparedWorkspace, warnings: readonly string[]) {
+  private promptWorkspace(ready: ReadyWorkspace, warnings: readonly string[]) {
     return {
-      rootPath: prepared.checkoutPath ?? prepared.rootPath,
-      diffPath: prepared.diffPath,
-      metadataPath: prepared.metadataPath,
-      technologyManifestPath: prepared.technologyManifestPath,
-      exclusions: prepared.exclusions,
+      checkoutRoot: ready.layout.checkoutRoot,
+      contextFiles: ready.layout.contextFiles,
+      exclusions: ready.prepared.exclusions,
       warnings,
     };
   }
 
-  private promptStandards(record: ReviewJobRecord, prepared: PreparedWorkspace): PromptStandards {
+  private promptStandards(record: ReviewJobRecord, ready: ReadyWorkspace): PromptStandards {
     if (!record.standards) return { kind: 'fallback' };
+    const file = ready.layout.contextFiles.find((entry) => entry.label === 'Project standards snapshot');
 
     return {
       kind: 'snapshot',
       filename: record.standards.filename,
       sha256: record.standards.sha256,
-      path: prepared.standardsPath ?? record.standardsStoragePath ?? '',
+      path: file?.path ?? this.standardsPathOf(record, ready.prepared),
     };
+  }
+
+  private standardsPathOf(record: ReviewJobRecord, prepared: PreparedWorkspace): string {
+    return prepared.standardsPath ?? record.standardsStoragePath ?? '';
   }
 
   private schemaPath(ctx: Runtime, kind: 'reviewer' | 'verifier'): string {

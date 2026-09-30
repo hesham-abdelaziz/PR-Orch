@@ -100,6 +100,60 @@ describe('adapter command profiles', () => {
   });
 });
 
+describe('read-only context directories outside the checkout', () => {
+  const dirs = ['C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\7f3a', 'D:\\standards\\abc'];
+
+  it('grants Claude read access with --add-dir (plan mode and the tool list keep it read-only)', () => {
+    const args = buildClaudeReviewArgs({ model: 'sonnet', schemaJson: SCHEMA, readOnlyDirectories: dirs });
+
+    expect(args.slice(args.indexOf('--no-session-persistence') + 1)).toEqual([
+      '--add-dir',
+      dirs[0],
+      '--add-dir',
+      dirs[1],
+      '--model',
+      'sonnet',
+    ]);
+    expect(() => assertCommandPolicy('claude', args, 'x'.repeat(50))).not.toThrow();
+  });
+
+  it('never gives Codex --add-dir, which grants write access; its read-only sandbox can already read them', () => {
+    const args = buildCodexReviewArgs({
+      model: 'm',
+      schemaPath: 'C:\\runs\\schema.json',
+      workspacePath: 'D:\\reviews\\7f3a\\repo',
+    });
+
+    expect(args).not.toContain('--add-dir');
+    expect(args[args.indexOf('--cd') + 1]).toBe('D:\\reviews\\7f3a\\repo');
+    expect(() => assertCommandPolicy('codex', [...args.slice(0, -1), '--add-dir', dirs[0] as string, '-'], 'x'.repeat(50))).toThrow(
+      /--add-dir/u,
+    );
+  });
+
+  it('includes the directories for Gemini as one comma-separated list', () => {
+    expect(buildGeminiReviewArgs({ model: 'pro', sandbox: false, readOnlyDirectories: dirs })).toEqual([
+      '--approval-mode',
+      'plan',
+      '--output-format',
+      'json',
+      '--include-directories',
+      dirs.join(','),
+      '--model',
+      'pro',
+    ]);
+  });
+
+  it('refuses a Gemini directory whose name contains the list separator', () => {
+    expect(() => buildGeminiReviewArgs({ model: 'pro', sandbox: false, readOnlyDirectories: ['C:\\a,b'] })).toThrow(/comma/iu);
+  });
+
+  it('adds nothing when every context file is inside the checkout', () => {
+    expect(buildClaudeReviewArgs({ model: 'sonnet', schemaJson: SCHEMA, readOnlyDirectories: [] })).not.toContain('--add-dir');
+    expect(buildGeminiReviewArgs({ model: 'pro', sandbox: false, readOnlyDirectories: [] })).not.toContain('--include-directories');
+  });
+});
+
 describe('assertSafeModelId', () => {
   it.each(['sonnet', 'claude-sonnet-5', 'gpt-x.1', 'gemini-2.5-pro', 'a:b/c_d'])(
     'accepts %s',

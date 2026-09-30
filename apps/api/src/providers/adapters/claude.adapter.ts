@@ -56,7 +56,11 @@ export class ClaudeAdapter extends BaseCliAdapter {
       throw new Error('The output schema file is unreadable or is not valid JSON');
     }
 
-    return buildClaudeReviewArgs({ model: request.model, schemaJson });
+    return buildClaudeReviewArgs({
+      model: request.model,
+      schemaJson,
+      readOnlyDirectories: request.readOnlyDirectories ?? [],
+    });
   }
 
   protected override inspectCompletedOutput(stdout: string): string | undefined {

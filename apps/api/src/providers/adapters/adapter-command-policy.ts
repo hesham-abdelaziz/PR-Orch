@@ -26,7 +26,12 @@ function modelArgs(model: string): string[] {
   return model === CLI_DEFAULT_MODEL ? [] : ['--model', model];
 }
 
-export function buildClaudeReviewArgs(input: { model: string; schemaJson: string }): string[] {
+export function buildClaudeReviewArgs(input: {
+  model: string;
+  schemaJson: string;
+  /** Directories outside the working directory that hold read-only context files. */
+  readOnlyDirectories?: readonly string[];
+}): string[] {
   return [
     '-p',
     '--output-format',
@@ -45,6 +50,9 @@ export function buildClaudeReviewArgs(input: { model: string; schemaJson: string
     '--strict-mcp-config',
     '--disable-slash-commands',
     '--no-session-persistence',
+    // --restricted confines file tools to the working directories; --add-dir
+    // extends them. Plan mode plus the Read/Grep/Glob tool list keep it read-only.
+    ...(input.readOnlyDirectories ?? []).flatMap((directory) => ['--add-dir', directory]),
     ...modelArgs(input.model),
   ];
 }
@@ -75,13 +83,23 @@ export function buildCodexReviewArgs(input: {
   ];
 }
 
-export function buildGeminiReviewArgs(input: { model: string; sandbox: boolean }): string[] {
+export function buildGeminiReviewArgs(input: {
+  model: string;
+  sandbox: boolean;
+  readOnlyDirectories?: readonly string[];
+}): string[] {
+  const directories = input.readOnlyDirectories ?? [];
+  if (directories.some((directory) => directory.includes(','))) {
+    throw new Error('A context directory name contains a comma, which Gemini uses as its list separator');
+  }
+
   return [
     '--approval-mode',
     'plan',
     '--output-format',
     'json',
     ...(input.sandbox ? ['--sandbox'] : []),
+    ...(directories.length > 0 ? ['--include-directories', directories.join(',')] : []),
     ...modelArgs(input.model),
   ];
 }
@@ -95,6 +113,14 @@ const FORBIDDEN_FLAGS: ReadonlySet<string> = new Set([
   '--yolo',
   '-y',
 ]);
+
+/** Flags that are safe for one provider but grant write access for another. */
+const PROVIDER_FORBIDDEN_FLAGS: Readonly<Record<ProviderId, ReadonlySet<string>>> = {
+  claude: new Set(),
+  // `codex --add-dir` grants *write* access to the directory.
+  codex: new Set(['--add-dir']),
+  gemini: new Set(),
+};
 
 /** The only value each mode-selecting flag may ever take. */
 const ALLOWED_MODE_VALUES: Readonly<Record<ProviderId, Readonly<Record<string, string>>>> = {
@@ -140,6 +166,7 @@ export function assertCommandPolicy(
 ): void {
   const forbidden =
     args.find((argument) => FORBIDDEN_FLAGS.has(argument.toLowerCase())) ??
+    args.find((argument) => PROVIDER_FORBIDDEN_FLAGS[provider].has(argument.split('=')[0]?.toLowerCase() ?? '')) ??
     findModeViolation(provider, args);
   if (forbidden !== undefined) {
     throw new Error(`Command policy violation: write-capable or unrestricted option "${forbidden}"`);

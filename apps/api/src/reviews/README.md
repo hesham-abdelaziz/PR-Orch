@@ -60,7 +60,19 @@ Bind these tokens in a module visible to `ReviewsModule`/`ReportsModule` (for ex
 
 `REVIEW_PROVIDER_PORT` is bound inside `ReviewsModule` to `ProviderRegistryService`. `PROVIDER_SNAPSHOT_STORE` (in `providers.module.ts`) may be overridden with a `provider_snapshots` table.
 
-**Workspace layout assumption:** provider cwd is `PreparedWorkspace.rootPath`; finding paths are reported relative to `checkoutPath ?? rootPath` and validated against it. The diff, metadata and technology-manifest files are read by absolute path from the prompt. Simplest compatible layout: `checkoutPath === rootPath`.
+### Workspace port assumptions (`PreparedWorkspace`, resolved by `workspace-layout.ts`)
+
+| Field | Meaning |
+| --- | --- |
+| `rootPath` | Platform-managed per-job directory holding the context files. May or may not contain the checkout. Never the provider cwd unless it equals `checkoutPath`. |
+| `checkoutPath` | **Required.** Absolute root of the source-revision checkout. It is the provider cwd (Codex also gets `--cd`), the root every finding `filePath` is relative to, and the tree that finding locations are validated against. |
+| `diffPath`, `metadataPath`, `technologyManifestPath` | Absolute. Preferably inside `rootPath` and outside the checkout, so they are never mistaken for PR files. If inside the checkout they are labelled as review context in the prompt. |
+| `standardsPath` | Absolute path of the job's standards copy, or `null` to use the standards snapshot's `storagePath`. |
+
+- All paths use one flavor: Windows drive paths (`C:\…`, either separator, compared case-insensitively) or POSIX. Mixed flavors, relative paths and UNC paths fail the job before any provider runs (`The prepared workspace layout is invalid: …`).
+- Context files outside the checkout are made readable as **read-only directories**: the workspace root when the file is inside it, otherwise the file's own directory (for a standards snapshot in app data). Claude receives `--add-dir <dir>` (needed because `--restricted` confines file tools to the working directories; plan mode and the `Read,Grep,Glob` tool list keep it read-only). Gemini receives `--include-directories <dir,dir>`. Codex receives nothing: its `read-only` sandbox can read the filesystem, and `codex --add-dir` would grant **write** access, so the command policy forbids it.
+- The prompt names the checkout as the working directory, lists each context file by absolute path with “outside the checkout, read-only” or its checkout-relative location, and tells the model to report paths relative to the checkout.
+- The engine never writes into `rootPath` or the checkout; its JSON-schema scratch files live in the OS temp directory.
 
 ### Entities and migration (`003-review-engine`)
 

@@ -50,6 +50,7 @@ export class GeminiAdapter extends BaseCliAdapter {
     return buildGeminiReviewArgs({
       model: request.model,
       sandbox: this.geminiDependencies.sandboxAvailable?.() ?? false,
+      readOnlyDirectories: request.readOnlyDirectories ?? [],
     });
   }
 

@@ -28,9 +28,11 @@ before they reach argv. `cli-default` omits `--model`.
 
 | Provider | Arguments (before an optional `--model <id>`) |
 | --- | --- |
-| Claude | `-p --output-format json --json-schema <inline> --permission-mode plan --permission-prompts none --restricted --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,mcp__* --strict-mcp-config --disable-slash-commands --no-session-persistence` |
+| Claude | `-p --output-format json --json-schema <inline> --permission-mode plan --permission-prompts none --restricted --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,mcp__* --strict-mcp-config --disable-slash-commands --no-session-persistence [--add-dir <context dir>]…` |
 | Codex | `--ask-for-approval never exec --sandbox read-only --ephemeral --skip-git-repo-check --color never --output-schema <file> --cd <workspace> [--model <id>] -` |
-| Gemini | `--approval-mode plan --output-format json [--sandbox] [--model <id>]` (prompt on stdin; `--sandbox` only when Docker/Podman is on `PATH`) |
+| Gemini | `--approval-mode plan --output-format json [--sandbox] [--include-directories <dir,dir>] [--model <id>]` (prompt on stdin; `--sandbox` only when Docker/Podman is on `PATH`) |
+
+The process cwd is always the checkout root (`ProviderRunRequest.workspacePath`). `readOnlyDirectories` lists absolute directories outside it that hold context files. `--add-dir` is forbidden for Codex by the command policy because it grants write access there.
 
 Write-capable, YOLO, auto-edit and unrestricted modes are absent and asserted
 absent by `adapter-contract.spec.ts`.

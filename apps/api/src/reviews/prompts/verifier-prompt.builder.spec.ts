@@ -32,10 +32,12 @@ function input(overrides: Partial<VerifierPromptInput> = {}): VerifierPromptInpu
       changedFiles: 4,
     },
     workspace: {
-      rootPath: 'C:\\work\\job-1\\checkout',
-      diffPath: 'C:\\work\\job-1\\pr.diff',
-      metadataPath: 'C:\\work\\job-1\\pr.json',
-      technologyManifestPath: 'C:\\work\\job-1\\technologies.json',
+      checkoutRoot: 'C:\\work\\job-1\\checkout',
+      contextFiles: [
+        { label: 'Unified PR diff', path: 'C:\\work\\job-1\\pr.diff', checkoutRelativePath: null },
+        { label: 'PR metadata (JSON)', path: 'C:\\work\\job-1\\pr.json', checkoutRelativePath: null },
+        { label: 'Detected technologies (JSON)', path: 'C:\\work\\job-1\\technologies.json', checkoutRelativePath: null },
+      ],
       exclusions: [{ path: 'dist/app.min.js', reason: 'Minified' }],
       warnings: [],
     },

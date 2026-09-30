@@ -13,10 +13,12 @@ function input(overrides: Partial<ReviewerPromptInput> = {}): ReviewerPromptInpu
       changedFiles: 4,
     },
     workspace: {
-      rootPath: 'C:\\work\\job-1\\checkout',
-      diffPath: 'C:\\work\\job-1\\pr.diff',
-      metadataPath: 'C:\\work\\job-1\\pr.json',
-      technologyManifestPath: 'C:\\work\\job-1\\technologies.json',
+      checkoutRoot: 'C:\\work\\job-1\\checkout',
+      contextFiles: [
+        { label: 'Unified PR diff', path: 'C:\\work\\job-1\\pr.diff', checkoutRelativePath: null },
+        { label: 'PR metadata (JSON)', path: 'C:\\work\\job-1\\pr.json', checkoutRelativePath: null },
+        { label: 'Detected technologies (JSON)', path: 'C:\\work\\job-1\\technologies.json', checkoutRelativePath: null },
+      ],
       exclusions: [{ path: 'package-lock.json', reason: 'Lock file' }],
       warnings: ['Diff exceeds the warning threshold.'],
     },
@@ -49,6 +51,30 @@ describe('ReviewerPromptBuilder', () => {
   it('exposes the rules as a frozen constant', () => {
     expect(Object.isFrozen(CORE_REVIEW_RULES)).toBe(true);
     expect(() => (CORE_REVIEW_RULES as string[]).push('extra rule')).toThrow(TypeError);
+  });
+
+  it('names the checkout as the working directory and says finding paths are relative to it', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toContain('Working directory (checkout root): C:\\work\\job-1\\checkout');
+    expect(prompt).toMatch(/filePath you report must be relative to this checkout root/u);
+    expect(prompt).toContain('- Unified PR diff: C:\\work\\job-1\\pr.diff (outside the checkout, read-only)');
+  });
+
+  it('labels a context file that sits inside the checkout so it is not mistaken for PR code', () => {
+    const base = input();
+    const prompt = builder.build(
+      input({
+        workspace: {
+          ...base.workspace,
+          contextFiles: [
+            { label: 'Unified PR diff', path: 'C:\\work\\job-1\\checkout\\.pr-review\\pr.diff', checkoutRelativePath: '.pr-review/pr.diff' },
+          ],
+        },
+      }),
+    );
+
+    expect(prompt).toContain('inside the checkout at .pr-review/pr.diff; review context, not part of the pull request');
   });
 
   it('points at the checkout, diff, metadata, and technology manifest by path only', () => {

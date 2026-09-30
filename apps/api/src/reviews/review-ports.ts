@@ -26,15 +26,28 @@ export interface StandardsSnapshotForReview {
 
 export interface PreparedWorkspace {
   workspaceId: string;
-  /** Workspace directory: the provider working directory; it holds the checkout and context files. */
+  /**
+   * Absolute, platform-managed workspace directory for this job. It holds the
+   * context files (diff, metadata, technology manifest) and may or may not
+   * contain the checkout. It is never the provider working directory unless it
+   * equals `checkoutPath`. Providers get read-only access to it when a context
+   * file lives here but outside the checkout.
+   */
   rootPath: string;
-  /** Repository checkout directory; defaults to `rootPath` when absent. */
-  checkoutPath?: string;
+  /**
+   * Required. Absolute root of the source-revision checkout: the provider
+   * working directory, the root every finding path is relative to, and the
+   * tree finding locations are validated against. Same path flavor (Windows
+   * drive or POSIX) as every other path here; no UNC paths.
+   */
+  checkoutPath: string;
   sourceCommit: string;
   targetCommit: string;
+  /** Absolute paths; inside `rootPath` (preferred) or inside the checkout. */
   diffPath: string;
   metadataPath: string;
   technologyManifestPath: string;
+  /** Absolute path of the job's standards copy, or null to use the snapshot's `storagePath`. */
   standardsPath: string | null;
   exclusions: CoverageExclusion[];
   warnings: string[];

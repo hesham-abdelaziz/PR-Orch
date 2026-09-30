@@ -207,6 +207,10 @@ export class FakeWorkspace implements ReviewWorkspacePort {
   cleanupFailures = 0;
   exclusions: PreparedWorkspace['exclusions'] = [];
   warnings: string[] = [];
+  /** Overrides for the prepared paths, e.g. a distinct or Windows-style layout. */
+  paths: Partial<
+    Pick<PreparedWorkspace, 'rootPath' | 'checkoutPath' | 'diffPath' | 'metadataPath' | 'technologyManifestPath'>
+  > = {};
 
   async prepare(input: PrepareWorkspaceInput, signal: AbortSignal): Promise<PreparedWorkspace> {
     this.prepared.push(input);
@@ -231,6 +235,7 @@ export class FakeWorkspace implements ReviewWorkspacePort {
       standardsPath: input.standards?.storagePath ?? null,
       exclusions: this.exclusions,
       warnings: this.warnings,
+      ...this.paths,
     };
   }
 

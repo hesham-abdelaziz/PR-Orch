@@ -92,16 +92,17 @@ describe('ReviewOrchestratorService — happy path', () => {
     expect(record.cleanupPending).toBe(false);
   });
 
-  it('gives providers the prompt on stdin, the workspace as cwd, a schema file, and the configured timeouts', async () => {
+  it('gives providers the prompt on stdin, the checkout as cwd, a schema file, and the configured timeouts', async () => {
     const h = await harness(twoReviewers());
 
     await runToEnd(h);
 
     const request = h.providers.adapters.codex.calls[0];
-    expect(request?.workspacePath).toBe('/work/job');
+    expect(request?.workspacePath).toBe('/work/job/checkout');
+    expect(request?.readOnlyDirectories).toEqual(['/work/job']);
     expect(request?.timeoutMs).toBe(600_000);
     expect(request?.model).toBe('cli-default');
-    expect(request?.prompt).toContain('/work/job/checkout');
+    expect(request?.prompt).toContain('Working directory (checkout root): /work/job/checkout');
     expect(request?.outputSchemaPath).toMatch(/schema/u);
     expect(h.providers.adapters.claude.calls[0]?.timeoutMs).toBe(600_000);
   });
@@ -905,6 +906,81 @@ describe('ReviewOrchestratorService — events', () => {
 
     expect(checks.length).toBeGreaterThan(0);
     expect(await Promise.all(checks)).toEqual(checks.map(() => true));
+  });
+});
+
+describe('ReviewOrchestratorService — workspace layout', () => {
+  const layouts = {
+    posix: {
+      rootPath: '/data/workspaces/job-7',
+      checkoutPath: '/srv/checkouts/job-7/repo',
+      diffPath: '/data/workspaces/job-7/pr.diff',
+      metadataPath: '/data/workspaces/job-7/pr.json',
+      technologyManifestPath: '/data/workspaces/job-7/tech.json',
+      inCheckout: '/srv/checkouts/job-7/repo/src/loader.ts',
+      inWorkspaceOnly: '/data/workspaces/job-7/pr.diff',
+    },
+    windows: {
+      rootPath: 'C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\job-7',
+      checkoutPath: 'D:\\reviews\\job-7\\repo',
+      diffPath: 'C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\job-7\\pr.diff',
+      metadataPath: 'C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\job-7\\pr.json',
+      technologyManifestPath: 'C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\job-7\\tech.json',
+      inCheckout: 'd:/Reviews/job-7/repo/src/loader.ts',
+      inWorkspaceOnly: 'C:\\Users\\Dev\\AppData\\Local\\PrOrchestrator\\workspaces\\job-7\\pr.diff',
+    },
+  } as const;
+
+  it.each(['posix', 'windows'] as const)(
+    'runs providers in the checkout, describes that directory as the working directory, and normalizes findings against it (%s)',
+    async (flavor) => {
+      const layout = layouts[flavor];
+      const h = await harness({
+        scripts: {
+          codex: (request) =>
+            completed(
+              'codex',
+              request,
+              reviewerJson([
+                wireFinding({ title: 'Finding addressed by absolute checkout path', filePath: layout.inCheckout }),
+                wireFinding({ title: 'Finding that points into the workspace, not the checkout', filePath: layout.inWorkspaceOnly }),
+              ]),
+            ),
+          gemini: (request) => completed('gemini', request, reviewerJson([])),
+          claude: verifierAcceptAll,
+        },
+      });
+      const { rootPath, checkoutPath, diffPath, metadataPath, technologyManifestPath } = layout;
+      h.workspace.paths = { rootPath, checkoutPath, diffPath, metadataPath, technologyManifestPath };
+
+      const { id, record } = await runToEnd(h);
+
+      expect(record.state).toBe('completed');
+      for (const call of [...h.providers.adapters.codex.calls, ...h.providers.adapters.claude.calls]) {
+        expect(call.workspacePath).toBe(checkoutPath);
+        expect(call.readOnlyDirectories).toEqual([rootPath]);
+        expect(call.prompt).toContain(`Working directory (checkout root): ${checkoutPath}`);
+        expect(call.prompt).toContain(diffPath);
+        expect(call.prompt).toContain(metadataPath);
+        expect(call.prompt).toContain(technologyManifestPath);
+        expect(call.prompt).not.toContain(`Working directory (checkout root): ${rootPath}`);
+      }
+      const candidates = await h.repository.listCandidates(id);
+      expect(candidates.map((candidate) => candidate.finding.filePath)).toEqual(['src/loader.ts']);
+      expect(record.warnings.join(' ')).toMatch(/discarded 1 finding/u);
+    },
+  );
+
+  it('fails the review before running any provider when the workspace has no usable checkout path', async () => {
+    const h = await harness(twoReviewers());
+    h.workspace.paths = { checkoutPath: 'relative/checkout' };
+
+    const { record } = await runToEnd(h);
+
+    expect(record.state).toBe('failed');
+    expect(record.failureReason).toMatch(/workspace layout/iu);
+    expect(h.providers.adapters.codex.calls).toHaveLength(0);
+    expect(h.workspace.cleaned).toHaveLength(1);
   });
 });
 

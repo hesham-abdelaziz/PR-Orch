@@ -135,6 +135,9 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
       if (!isAbsolute(request.workspacePath) || !isAbsolute(request.outputSchemaPath)) {
         throw new Error('workspacePath and outputSchemaPath must be absolute paths');
       }
+      if ((request.readOnlyDirectories ?? []).some((directory) => !isAbsolute(directory))) {
+        throw new Error('readOnlyDirectories must be absolute paths');
+      }
     } catch (error) {
       return fail({ kind: 'invalid_request', message: errorMessage(error) });
     }

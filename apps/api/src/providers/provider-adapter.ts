@@ -30,8 +30,18 @@ export interface ProviderInstallation {
 export interface ProviderRunRequest {
   runId: string;
   model: string;
-  /** Absolute directory the provider inspects; used as the process cwd. */
+  /**
+   * Absolute checkout root: the process cwd (and Codex `--cd`). Finding paths
+   * are relative to it.
+   */
   workspacePath: string;
+  /**
+   * Absolute directories outside the checkout that hold read-only context
+   * files (diff, metadata, technology manifest, standards snapshot). Claude
+   * gets `--add-dir`, Gemini `--include-directories`; Codex's read-only
+   * sandbox can already read them (its `--add-dir` would grant write access).
+   */
+  readOnlyDirectories?: readonly string[];
   /** Sent through stdin; never placed on the command line. */
   prompt: string;
   /** Absolute path of the JSON Schema the final answer must satisfy. */
