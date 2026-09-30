@@ -1,8 +1,9 @@
-import { Component, EventEmitter, Input, Output, OnInit } from '@angular/core';
+import { Component, EventEmitter, Input, Output, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ModelSelection, Settings } from '@pr-orchestrator/contracts';
 import { SelectableModel } from '../providers/providers.store';
+import { ProviderQuotasStore } from '../providers/provider-quotas.store';
 
 @Component({
   selector: 'app-review-defaults',
@@ -84,11 +85,16 @@ import { SelectableModel } from '../providers/providers.store';
                   <option [ngValue]="null">-- None (select manually) --</option>
                   @for (m of availableModels; track m.provider + ':' + m.model) {
                     <option [value]="m.provider + ':' + m.model">
-                      {{ m.label }} ({{ m.provider }})
+                      {{ m.label }} ({{ m.provider }}){{ getQuotaSnippet(m.provider) }}
                     </option>
                   }
                 </select>
                 <span class="field-hint">Exact-one model responsible for evidence verification</span>
+                @if (formSettings.defaultMain && getQuotaSummary(formSettings.defaultMain.provider)) {
+                  <span class="field-hint selected-quota font-mono">
+                    {{ getQuotaSummary(formSettings.defaultMain.provider) }}
+                  </span>
+                }
               </div>
 
               <div class="form-group">
@@ -254,12 +260,24 @@ import { SelectableModel } from '../providers/providers.store';
       resize: vertical;
     }
 
+    .selected-quota {
+      color: $text-secondary;
+      margin-top: 4px;
+      display: block;
+    }
+
+    .font-mono {
+      font-family: $font-mono;
+    }
+
     .form-actions {
       margin-top: 20px;
     }
   `],
 })
 export class ReviewDefaultsComponent implements OnInit {
+  private readonly providerQuotasStore = inject(ProviderQuotasStore, { optional: true });
+
   @Input() settings: Settings | null = null;
   @Input() availableModels: SelectableModel[] = [];
   @Input() saving = false;
@@ -297,5 +315,32 @@ export class ReviewDefaultsComponent implements OnInit {
     if (this.formSettings) {
       this.save.emit(this.formSettings);
     }
+  }
+
+  getQuotaSummary(provider: ModelSelection['provider']): string {
+    return this.providerQuotasStore?.getProviderSummary(provider) || '';
+  }
+
+  getQuotaSnippet(provider: ModelSelection['provider']): string {
+    if (!this.providerQuotasStore) return '';
+    const quota = this.providerQuotasStore.getProviderQuota(provider);
+    if (!quota) return '';
+    if (quota.status === 'available') {
+      const isStale = this.providerQuotasStore.isProviderLocallyStale(quota);
+      const staleTag = isStale ? ' (stale)' : '';
+      const parts = quota.windows.map((w) => {
+        const dur = this.providerQuotasStore!.formatDuration(w.windowDurationMins);
+        const prefix = dur ? `${dur}: ` : '';
+        if (this.providerQuotasStore!.isWindowResetPassed(w)) {
+          return `${prefix}Reset pending`;
+        }
+        return `${prefix}${w.remainingPercent !== null ? w.remainingPercent + '%' : 'Unavailable'}`;
+      });
+      return parts.length ? ` — [${provider.toUpperCase()} shared quota${staleTag}: ${parts.join('; ')}]` : '';
+    }
+    if (quota.status === 'unauthenticated') {
+      return ` — [${provider.toUpperCase()}: Unauthenticated]`;
+    }
+    return '';
   }
 }

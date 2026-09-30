@@ -8,6 +8,7 @@ import { MainModelSelectorComponent } from './main-model-selector.component';
 import { ReviewerSelectorComponent } from './reviewer-selector.component';
 import { StandardsStatusComponent } from './standards-status.component';
 import { AdditionalInstructionsComponent } from './additional-instructions.component';
+import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 
 @Component({
   selector: 'app-new-review-page',
@@ -432,9 +433,11 @@ import { AdditionalInstructionsComponent } from './additional-instructions.compo
 })
 export class NewReviewPageComponent implements OnInit {
   readonly store = inject(NewReviewStore);
+  readonly providerQuotasStore = inject(ProviderQuotasStore, { optional: true });
   private readonly router = inject(Router);
 
   async ngOnInit(): Promise<void> {
+    this.providerQuotasStore?.loadQuotas().catch(() => {});
     await this.store.loadInitialData();
   }
 

@@ -1,7 +1,8 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ModelSelection } from '@pr-orchestrator/contracts';
+import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 
 export interface SelectableModelOption {
   provider: 'claude' | 'codex' | 'gemini';
@@ -47,7 +48,7 @@ export interface SelectableModelOption {
                   [value]="opt.provider + ':' + opt.model"
                   [disabled]="opt.available === false"
                 >
-                  {{ opt.label }} ({{ opt.provider | uppercase }}){{ opt.available === false ? ' — [Unavailable: ' + (opt.unavailableReason || 'CLI unauthenticated') + ']' : '' }}
+                  {{ opt.label }} ({{ opt.provider | uppercase }}){{ getQuotaSnippet(opt.provider) }}{{ opt.available === false ? ' — [Unavailable: ' + (opt.unavailableReason || 'CLI unauthenticated') + ']' : '' }}
                 </option>
               }
             </select>
@@ -64,6 +65,12 @@ export interface SelectableModelOption {
             <div class="model-desc">
               {{ selectedModelOption.label }}
             </div>
+            @if (getQuotaSummary(selectedModelOption.provider)) {
+              <div class="model-quota-row font-mono">
+                <span class="quota-icon">⚡</span>
+                <span class="quota-text">{{ getQuotaSummary(selectedModelOption.provider) }}</span>
+              </div>
+            }
           </div>
         }
       </div>
@@ -203,9 +210,31 @@ export interface SelectableModelOption {
     .font-mono {
       font-family: $font-mono;
     }
+
+    .model-quota-row {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid $border-subtle;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: $text-secondary;
+
+      .quota-icon {
+        color: $accent-primary;
+        font-size: 11px;
+      }
+
+      .quota-text {
+        @include truncate;
+      }
+    }
   `],
 })
 export class MainModelSelectorComponent {
+  private readonly providerQuotasStore = inject(ProviderQuotasStore, { optional: true });
+
   @Input() selection: ModelSelection | null = null;
   @Input() availableModels: SelectableModelOption[] = [];
   @Output() selectionChange = new EventEmitter<ModelSelection>();
@@ -230,5 +259,32 @@ export class MainModelSelectorComponent {
         model,
       });
     }
+  }
+
+  getQuotaSummary(provider: 'claude' | 'codex' | 'gemini'): string {
+    return this.providerQuotasStore?.getProviderSummary(provider) || '';
+  }
+
+  getQuotaSnippet(provider: 'claude' | 'codex' | 'gemini'): string {
+    if (!this.providerQuotasStore) return '';
+    const quota = this.providerQuotasStore.getProviderQuota(provider);
+    if (!quota) return '';
+    if (quota.status === 'available') {
+      const isStale = this.providerQuotasStore.isProviderLocallyStale(quota);
+      const staleTag = isStale ? ' (stale)' : '';
+      const parts = quota.windows.map((w) => {
+        const dur = this.providerQuotasStore!.formatDuration(w.windowDurationMins);
+        const prefix = dur ? `${dur}: ` : '';
+        if (this.providerQuotasStore!.isWindowResetPassed(w)) {
+          return `${prefix}Reset pending`;
+        }
+        return `${prefix}${w.remainingPercent !== null ? w.remainingPercent + '%' : 'Unavailable'}`;
+      });
+      return parts.length ? ` — [${provider.toUpperCase()} shared quota${staleTag}: ${parts.join('; ')}]` : '';
+    }
+    if (quota.status === 'unauthenticated') {
+      return ` — [${provider.toUpperCase()}: Unauthenticated]`;
+    }
+    return '';
   }
 }

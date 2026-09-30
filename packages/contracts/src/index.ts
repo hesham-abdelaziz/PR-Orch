@@ -5,3 +5,4 @@ export * from './quota.js';
 export * from './pull-requests.js';
 export * from './reviews.js';
 export * from './settings.js';
+export * from './quota.js';

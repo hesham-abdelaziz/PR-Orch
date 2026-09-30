@@ -1,4 +1,4 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import {
   AuthSession,
   AuthSessionSchema,
@@ -11,6 +11,8 @@ import {
 } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../api/api-client.service';
 import { ApiError } from '../api/api-error';
+
+import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 
 @Injectable({ providedIn: 'root' })
 export class AuthStore {
@@ -25,9 +27,12 @@ export class AuthStore {
     return s && s.authenticated ? s.username : null;
   });
 
+  private readonly providerQuotasStore = inject(ProviderQuotasStore, { optional: true });
+
   constructor(private readonly apiClient: ApiClientService) {
     this.apiClient.onUnauthorized(() => {
       this.session.set({ authenticated: false, setupRequired: false });
+      this.providerQuotasStore?.clear();
     });
   }
 
@@ -112,6 +117,7 @@ export class AuthStore {
       // In all cases, reset local session on logout
     } finally {
       this.session.set({ authenticated: false, setupRequired: false });
+      this.providerQuotasStore?.clear();
       this.loading.set(false);
     }
   }

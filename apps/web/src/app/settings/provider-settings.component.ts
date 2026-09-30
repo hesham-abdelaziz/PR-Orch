@@ -1,6 +1,7 @@
-import { Component, inject } from '@angular/core';
+import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ProvidersStore } from '../providers/providers.store';
+import { ProviderQuotasStore } from '../providers/provider-quotas.store';
 import { ProviderStatusCardComponent } from '../providers/provider-status-card.component';
 
 @Component({
@@ -17,15 +18,36 @@ import { ProviderStatusCardComponent } from '../providers/provider-status-card.c
           </p>
         </div>
 
-        <button
-          type="button"
-          class="btn-secondary refresh-btn"
-          [disabled]="providersStore.loading()"
-          (click)="onRefresh()"
-        >
-          <span class="refresh-icon" [class.spinning]="providersStore.loading()">⟳</span>
-          <span>{{ providersStore.loading() ? 'Detecting Binaries...' : 'Detect CLI Binaries' }}</span>
-        </button>
+        <div class="header-actions">
+          <button
+            type="button"
+            class="btn-secondary refresh-btn"
+            [disabled]="providersStore.loading()"
+            (click)="onRefresh()"
+          >
+            <span class="refresh-icon" [class.spinning]="providersStore.loading()">⟳</span>
+            <span>{{ providersStore.loading() ? 'Detecting Binaries...' : 'Detect CLI Binaries' }}</span>
+          </button>
+
+          <button
+            type="button"
+            id="refresh-quotas-btn"
+            class="btn-secondary refresh-btn"
+            [disabled]="!providerQuotasStore.canRefresh()"
+            (click)="onRefreshQuotas()"
+          >
+            <span class="refresh-icon" [class.spinning]="providerQuotasStore.refreshing()">⟳</span>
+            <span>
+              @if (providerQuotasStore.refreshing()) {
+                Refreshing Quotas...
+              } @else if (providerQuotasStore.cooldownSecondsRemaining() > 0) {
+                Cooldown ({{ providerQuotasStore.cooldownSecondsRemaining() }}s)
+              } @else {
+                Refresh Quotas
+              }
+            </span>
+          </button>
+        </div>
       </div>
 
       @if (providersStore.error()) {
@@ -35,9 +57,19 @@ import { ProviderStatusCardComponent } from '../providers/provider-status-card.c
         </div>
       }
 
+      @if (providerQuotasStore.error()) {
+        <div class="error-banner quota-error-banner" role="alert">
+          <span>⚠</span>
+          <span>{{ providerQuotasStore.error() }}</span>
+        </div>
+      }
+
       <div class="provider-cards-grid">
         @for (status of providersStore.providers(); track status.provider) {
-          <app-provider-status-card [status]="status" />
+          <app-provider-status-card
+            [status]="status"
+            [quota]="providerQuotasStore.getProviderQuota(status.provider)"
+          />
         } @empty {
           <div class="empty-state">
             @if (providersStore.loading()) {
@@ -80,6 +112,13 @@ import { ProviderStatusCardComponent } from '../providers/provider-status-card.c
       }
     }
 
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     .refresh-btn {
       display: flex;
       align-items: center;
@@ -98,6 +137,10 @@ import { ProviderStatusCardComponent } from '../providers/provider-status-card.c
       100% { transform: rotate(360deg); }
     }
 
+    .quota-error-banner {
+      margin-top: -10px;
+    }
+
     .provider-cards-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -113,10 +156,19 @@ import { ProviderStatusCardComponent } from '../providers/provider-status-card.c
     }
   `],
 })
-export class ProviderSettingsComponent {
+export class ProviderSettingsComponent implements OnInit {
   readonly providersStore = inject(ProvidersStore);
+  readonly providerQuotasStore = inject(ProviderQuotasStore);
+
+  async ngOnInit(): Promise<void> {
+    await this.providerQuotasStore.loadQuotas();
+  }
 
   async onRefresh(): Promise<void> {
     await this.providersStore.refresh();
+  }
+
+  async onRefreshQuotas(): Promise<void> {
+    await this.providerQuotasStore.refreshQuotas();
   }
 }

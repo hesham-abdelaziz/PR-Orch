@@ -1,8 +1,9 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, Input, Output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ModelSelection } from '@pr-orchestrator/contracts';
 import { SelectableModelOption } from './main-model-selector.component';
+import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 
 @Component({
   selector: 'app-reviewer-selector',
@@ -41,6 +42,11 @@ import { SelectableModelOption } from './main-model-selector.component';
                 <span class="model-label truncate" [title]="getModelLabel(reviewer)">
                   {{ getModelLabel(reviewer) }}
                 </span>
+                @if (getQuotaSummary(reviewer.provider)) {
+                  <span class="reviewer-quota font-mono truncate" [title]="getQuotaSummary(reviewer.provider)">
+                    {{ getQuotaSummary(reviewer.provider) }}
+                  </span>
+                }
               </div>
             </div>
 
@@ -74,7 +80,7 @@ import { SelectableModelOption } from './main-model-selector.component';
                   [value]="opt.provider + ':' + opt.model"
                   [disabled]="isModelDisabled(opt)"
                 >
-                  {{ opt.label }} ({{ opt.provider | uppercase }})
+                  {{ opt.label }} ({{ opt.provider | uppercase }}){{ getQuotaSnippet(opt.provider) }}
                   @if (isModelSelected(opt)) {
                     — [Already Added]
                   } @else if (opt.available === false) {
@@ -294,12 +300,20 @@ import { SelectableModelOption } from './main-model-selector.component';
       @include truncate;
     }
 
+    .reviewer-quota {
+      font-size: 10px;
+      color: $text-secondary;
+      margin-top: 2px;
+    }
+
     .font-mono {
       font-family: $font-mono;
     }
   `],
 })
 export class ReviewerSelectorComponent {
+  private readonly providerQuotasStore = inject(ProviderQuotasStore, { optional: true });
+
   @Input() reviewers: ModelSelection[] = [];
   @Input() availableModels: SelectableModelOption[] = [];
 
@@ -346,5 +360,32 @@ export class ReviewerSelectorComponent {
     if (this.reviewers.length > 1) {
       this.remove.emit(index);
     }
+  }
+
+  getQuotaSummary(provider: 'claude' | 'codex' | 'gemini'): string {
+    return this.providerQuotasStore?.getProviderSummary(provider) || '';
+  }
+
+  getQuotaSnippet(provider: 'claude' | 'codex' | 'gemini'): string {
+    if (!this.providerQuotasStore) return '';
+    const quota = this.providerQuotasStore.getProviderQuota(provider);
+    if (!quota) return '';
+    if (quota.status === 'available') {
+      const isStale = this.providerQuotasStore.isProviderLocallyStale(quota);
+      const staleTag = isStale ? ' (stale)' : '';
+      const parts = quota.windows.map((w) => {
+        const dur = this.providerQuotasStore!.formatDuration(w.windowDurationMins);
+        const prefix = dur ? `${dur}: ` : '';
+        if (this.providerQuotasStore!.isWindowResetPassed(w)) {
+          return `${prefix}Reset pending`;
+        }
+        return `${prefix}${w.remainingPercent !== null ? w.remainingPercent + '%' : 'Unavailable'}`;
+      });
+      return parts.length ? ` — [${provider.toUpperCase()} shared quota${staleTag}: ${parts.join('; ')}]` : '';
+    }
+    if (quota.status === 'unauthenticated') {
+      return ` — [${provider.toUpperCase()}: Unauthenticated]`;
+    }
+    return '';
   }
 }
