@@ -1,0 +1,64 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { DataSource } from 'typeorm';
+import { createPlatformDataSource } from '../database/data-source.js';
+import { FakeSecretStore, SecretValuesService } from '../secrets/secret-store.js';
+import { SettingsService } from '../settings/settings.service.js';
+import { StandardsService } from '../standards/standards.service.js';
+import { AuthService } from '../auth/auth.service.js';
+
+describe('platform services', () => {
+  let root: string; let db: DataSource;
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'platform-')); db = await createPlatformDataSource(join(root, 'db.sqlite')).initialize(); await db.runMigrations(); });
+  afterEach(async () => { await db.destroy(); await rm(root, { recursive: true, force: true }); });
+  it('makes saved and replaced PAT values available to the engine without storing them in SQLite', async () => {
+    const store = new FakeSecretStore(); const secrets = new SecretValuesService(store);
+    await secrets.setPat('synthetic-first-value'); await secrets.setPat('synthetic-second-value');
+    expect(secrets.values()).toEqual(expect.arrayContaining(['synthetic-first-value', 'synthetic-second-value']));
+    expect(await store.get('azure-devops-pat')).toBe('synthetic-second-value');
+    await secrets.deletePat(); expect(await store.get('azure-devops-pat')).toBeNull();
+    expect(secrets.values()).toContain('synthetic-first-value');
+  });
+  it('validates settings and keeps standards snapshots immutable across replacement', async () => {
+    const settings = new SettingsService(db, root);
+    expect((await settings.get()).maxParallelReviewers).toBe(3);
+    await expect(settings.update({ maxParallelReviewers: 4 })).rejects.toThrow();
+    const standards = new StandardsService(db, root);
+    const first = await standards.replace('standards.md', 'first');
+    const snapshot = await standards.snapshotForReview('job');
+    await standards.replace('standards.txt', 'second');
+    expect(snapshot?.metadata).toEqual(first);
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(snapshot!.storagePath, 'utf8')).toBe('first');
+    expect(await standards.readContent()).toBe('second');
+    await expect(standards.replace('../escape.md', 'bad')).rejects.toThrow();
+    await expect(standards.replace('file.md', '\u0000')).rejects.toThrow();
+    await expect(standards.replace('large.md', 'a'.repeat(1048577))).rejects.toThrow();
+  });
+  it('creates one account, hashes passwords, revokes sessions on password change and enforces expiry', async () => {
+    let now = new Date('2026-09-30T00:00:00Z');
+    const auth = new AuthService(db, () => now);
+    const results = await Promise.allSettled([auth.setup({ username: 'user', password: 'long-password-1' }), auth.setup({ username: 'other', password: 'long-password-2' })]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const winner = results.find(r => r.status === 'fulfilled')! as PromiseFulfilledResult<Awaited<ReturnType<AuthService['setup']>>>;
+    const username = results[0]!.status === 'fulfilled' ? 'user' : 'other';
+    const password = username === 'user' ? 'long-password-1' : 'long-password-2';
+    const row = (await db.query('SELECT * FROM user_accounts'))[0];
+    expect(row.password_hash).toMatch(/^\$argon2id\$/);
+    expect(await auth.getSession(winner.value.token)).toMatchObject({ authenticated: true, username });
+    await expect(auth.login({ username, password: 'wrong-password-1' })).rejects.toThrow();
+    const session = await auth.login({ username, password });
+    await auth.changePassword(session.token, { currentPassword: password, newPassword: 'new-password-1' });
+    expect(await auth.getSession(winner.value.token)).toMatchObject({ authenticated: false });
+    expect(await auth.getSession(session.token)).toMatchObject({ authenticated: false });
+    const fresh = await auth.login({ username, password: 'new-password-1' });
+    now = new Date('2026-10-01T00:00:00Z');
+    expect(await auth.getSession(fresh.token)).toMatchObject({ authenticated: false });
+    const another = await auth.login({ username, password: 'new-password-1' });
+    await auth.logout(another.token);
+    expect(await auth.getSession(another.token)).toMatchObject({ authenticated: false });
+    const rows = await db.query('SELECT * FROM sessions');
+    expect(JSON.stringify(rows)).not.toContain(another.token);
+  });
+});
