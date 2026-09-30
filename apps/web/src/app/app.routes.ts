@@ -51,11 +51,13 @@ export const routes: Routes = [
       },
       {
         path: 'standards',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./standards/standards-page.component').then((m) => m.StandardsPageComponent),
       },
       {
         path: 'settings',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./settings/settings-page.component').then((m) => m.SettingsPageComponent),
       },
     ],
   },
