@@ -186,4 +186,24 @@ describe('ActiveReviewPageComponent', () => {
 
     expect(navSpy).toHaveBeenCalledWith([`/reviews/${mockActiveJob.id}`]);
   });
+
+  it('renders empty state when /api/reviews/active returns HTTP 204 (no active review)', async () => {
+    apiClientMock.request.mockImplementation((opts) => {
+      if (opts.path === '/api/reviews/active') {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({});
+    });
+
+    eventsServiceMock.connect.mockClear();
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.empty-state')).toBeTruthy();
+    expect(el.textContent).toContain('No Active Review In Progress');
+    expect(el.textContent).toContain('There are no reviews currently executing');
+    expect(el.querySelector('a.btn-primary')?.textContent).toContain('Start New PR Review');
+    expect(eventsServiceMock.connect).not.toHaveBeenCalled();
+  });
 });

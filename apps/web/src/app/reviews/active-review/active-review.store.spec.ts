@@ -106,6 +106,17 @@ describe('ActiveReviewStore', () => {
     expect(store.isTerminal()).toBe(false);
   });
 
+  it('handles HTTP 204 when no active review exists without connecting to SSE stream', async () => {
+    apiClientMock.request.mockResolvedValueOnce(null);
+
+    await store.loadJob();
+
+    expect(store.job()).toBeNull();
+    expect(store.loading()).toBe(false);
+    expect(store.error()).toBeNull();
+    expect(eventsServiceMock.connect).not.toHaveBeenCalled();
+  });
+
   it('updates reviewer state upon receiving reviewer.state_changed event', async () => {
     await store.loadJob();
 
