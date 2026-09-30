@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { webContentSecurityPolicy } from './platform/web-csp.js';
 import { NestFactory } from '@nestjs/core';
 import {
   HttpException,
@@ -139,6 +140,7 @@ export async function createLocalApplication(
       { logger: false, bodyParser: false, abortOnError: false },
     );
     app.getHttpAdapter().getInstance().disable('x-powered-by');
+    const contentSecurityPolicy = await webContentSecurityPolicy(options.webRoot);
     app.use((req: Request, res: Response, next: NextFunction) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
@@ -146,7 +148,7 @@ export async function createLocalApplication(
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader(
         'Content-Security-Policy',
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        contentSecurityPolicy,
       );
       // Also protect static assets and the SPA from DNS rebinding.
       if (

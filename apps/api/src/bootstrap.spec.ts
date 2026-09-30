@@ -28,7 +28,7 @@ describe('local application startup', () => {
     await mkdir(webRoot);
     await writeFile(
       join(webRoot, 'index.html'),
-      '<!doctype html><html><body>Dashboard fixture</body></html>',
+      '<!doctype html><html><body>Dashboard fixture<script>console.log("csp-fixture");</script></body></html>',
     );
     let app = await createLocalApplication({ ...options, webRoot });
     try {
@@ -45,6 +45,15 @@ describe('local application startup', () => {
       expect(
         (await request(app.getHttpServer()).get('/settings')).text,
       ).toContain('Dashboard fixture');
+      const page = await request(app.getHttpServer()).get('/settings');
+      expect(page.headers['content-security-policy']).toContain(
+        "'sha256-XkJRIO9A6JZW2YgxdDlMslUndybtnfEgEwy6cEF4/ZU='",
+      );
+      expect(
+        page.headers['content-security-policy']
+          .split(';')
+          .find((part: string) => part.trim().startsWith('script-src')),
+      ).not.toContain('unsafe-inline');
       expect(
         (
           await request(app.getHttpServer())
