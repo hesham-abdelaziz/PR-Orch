@@ -1,4 +1,4 @@
-import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 
 import type { ProviderId } from '@pr-orchestrator/contracts';
@@ -6,8 +6,14 @@ import type { ProviderId } from '@pr-orchestrator/contracts';
 import type { CliLocator, ResolvedExecutable } from './provider-adapter.js';
 
 export interface FileSystemPort {
+  /** True for an existing regular file (links are followed). */
   isFile(path: string): boolean;
   readText(path: string): string | undefined;
+  /**
+   * Canonical path with every junction and symbolic link resolved, or
+   * `undefined` when it cannot be resolved. Ports without links may omit it.
+   */
+  realPath?(path: string): string | undefined;
 }
 
 export const nodeFileSystem: FileSystemPort = {
@@ -28,6 +34,13 @@ export const nodeFileSystem: FileSystemPort = {
       return undefined;
     }
   },
+  realPath(path) {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      return undefined;
+    }
+  },
 };
 
 export interface WindowsCliResolverOptions {
@@ -42,6 +55,10 @@ export interface WindowsCliResolverOptions {
 // every .cmd shim.
 const SHIM_LAUNCH_PATTERN = /"%dp0%\\([^"\r\n]+?)"\s+%\*/giu;
 const JAVASCRIPT_ENTRY = /\.(?:c|m)?js$/iu;
+const NATIVE_ENTRY = /\.exe$/iu;
+// A package directory name: `name` or the `name` half of `@scope\name`.
+const PACKAGE_SEGMENT = /^[^@\\/:*?"<>|][^\\/:*?"<>|]*$/u;
+const SCOPE_SEGMENT = /^@[^\\/:*?"<>|]+$/u;
 
 /**
  * Locates provider CLIs by absolute path without ever involving a shell.
@@ -137,7 +154,9 @@ export class WindowsCliResolver implements CliLocator {
 
     const matches = [...content.matchAll(SHIM_LAUNCH_PATTERN)];
     const relativeEntry = matches.at(-1)?.[1];
-    if (relativeEntry === undefined || !JAVASCRIPT_ENTRY.test(relativeEntry)) return undefined;
+    if (relativeEntry === undefined) return undefined;
+    if (NATIVE_ENTRY.test(relativeEntry)) return this.resolveNativeShimTarget(shimPath, relativeEntry);
+    if (!JAVASCRIPT_ENTRY.test(relativeEntry)) return undefined;
     if (relativeEntry.split('\\').some((segment) => segment === '..' || segment === '.')) {
       return undefined;
     }
@@ -151,4 +170,58 @@ export class WindowsCliResolver implements CliLocator {
 
     return { executablePath: this.nodeExecutablePath, prefixArgs: [entryPath] };
   }
+
+  /**
+   * npm launches a native `bin` (e.g. Claude Code's `claude.exe`) directly from
+   * its wrapper. The target is accepted only when it is a regular file whose
+   * real path stays under `<shim dir>\node_modules\<package>\`; it is then run
+   * as itself, without Node.
+   */
+  private resolveNativeShimTarget(
+    shimPath: string,
+    relativeEntry: string,
+  ): ResolvedExecutable | undefined {
+    const segments = relativeEntry.split('\\');
+    const cleanSegments = segments.every(
+      (segment) => segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes(':'),
+    );
+    if (!cleanSegments || segments[0]?.toLowerCase() !== 'node_modules') return undefined;
+
+    const scoped = segments[1]?.startsWith('@') === true;
+    const packageSegments = scoped ? segments.slice(1, 3) : segments.slice(1, 2);
+    const validPackage = scoped
+      ? SCOPE_SEGMENT.test(packageSegments[0] ?? '') && PACKAGE_SEGMENT.test(packageSegments[1] ?? '')
+      : PACKAGE_SEGMENT.test(packageSegments[0] ?? '');
+    // At least one segment (the executable) must follow the package directory.
+    if (!validPackage || segments.length <= 1 + packageSegments.length) return undefined;
+
+    const shimDirectory = win32.dirname(shimPath);
+    if (!win32.isAbsolute(shimDirectory) || isUncPath(shimDirectory)) return undefined;
+
+    // Containment is checked on real paths: the target, after every junction and
+    // link is resolved, must sit under the real shim directory's package folder.
+    const realShimDirectory = this.realPath(shimDirectory);
+    const realEntry = this.realPath(win32.join(shimDirectory, ...segments));
+    if (realShimDirectory === undefined || realEntry === undefined) return undefined;
+    if (!win32.isAbsolute(realEntry) || isUncPath(realShimDirectory) || isUncPath(realEntry)) {
+      return undefined;
+    }
+
+    const packageRoot = win32.join(realShimDirectory, 'node_modules', ...packageSegments);
+    const insidePackage = realEntry
+      .toLowerCase()
+      .startsWith(`${packageRoot.toLowerCase()}${win32.sep}`);
+    if (!insidePackage || !this.fileSystem.isFile(realEntry)) return undefined;
+
+    return { executablePath: realEntry, prefixArgs: [] };
+  }
+
+  private realPath(path: string): string | undefined {
+    return this.fileSystem.realPath ? this.fileSystem.realPath(path) : path;
+  }
+}
+
+/** `\\server\share`, `\\?\…` and `\\.\…` forms; never trusted as a launch location. */
+function isUncPath(path: string): boolean {
+  return path.startsWith('\\\\') || path.startsWith('//');
 }

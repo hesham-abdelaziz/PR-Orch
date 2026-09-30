@@ -4,11 +4,14 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { NPM_NATIVE_EXE_SHIM } from '../../../../../tests/fixtures/fake-clis/windows-npm-shims.js';
 import {
   createFakeProviderKit,
   type FakeProviderBehavior,
 } from '../../../../../tests/fixtures/fake-clis/scenarios.js';
+import type { ProcessRunRequest, ProcessRunResult } from '../process/process-runner.types.js';
 import { ProcessSupervisor } from '../process/process-supervisor.service.js';
+import { WindowsCliResolver } from '../windows-cli-resolver.js';
 import { buildClaudeReviewArgs } from './adapter-command-policy.js';
 import { ClaudeAdapter } from './claude.adapter.js';
 
@@ -150,5 +153,59 @@ describe('ClaudeAdapter', () => {
     });
 
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'authentication' } });
+  });
+});
+
+describe('ClaudeAdapter with the Windows npm wrapper', () => {
+  it('reports Claude Code installed and supported through its native npm launch target', async () => {
+    const prefix = 'C:\\Program Files\\nodejs';
+    const exe = `${prefix}\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe`;
+    const files = new Map([
+      [`${prefix}\\claude.cmd`.toLowerCase(), NPM_NATIVE_EXE_SHIM],
+      [exe.toLowerCase(), ''],
+    ]);
+    const spawned: Pick<ProcessRunRequest, 'executablePath' | 'args'>[] = [];
+    const supervisor = {
+      run: (request: ProcessRunRequest): Promise<ProcessRunResult> => {
+        spawned.push({ executablePath: request.executablePath, args: request.args });
+
+        return Promise.resolve({
+          runId: request.runId,
+          status: 'completed',
+          exitCode: 0,
+          stdout: '2.1.280 (Claude Code)\n',
+          stderr: '',
+          stdoutBytes: 22,
+          stderrBytes: 0,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          durationMs: 1,
+        });
+      },
+      cancel: () => Promise.resolve(),
+    } as unknown as ProcessSupervisor;
+    const adapter = new ClaudeAdapter({
+      supervisor,
+      locator: new WindowsCliResolver({
+        platform: 'win32',
+        environment: { Path: `C:\\Windows\\System32;${prefix}`, PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+        fileSystem: {
+          isFile: (path) => files.has(path.toLowerCase()),
+          readText: (path) => files.get(path.toLowerCase()),
+        },
+        nodeExecutablePath: 'C:\\Program Files\\nodejs\\node.exe',
+      }),
+      environment: () => ({}),
+    });
+
+    const installation = await adapter.detectInstallation();
+
+    expect(installation).toEqual({
+      installed: true,
+      executable: { executablePath: exe, prefixArgs: [] },
+      displayPath: exe,
+      version: '2.1.280',
+    });
+    expect(spawned).toEqual([{ executablePath: exe, args: ['--version'] }]);
   });
 });
