@@ -13,6 +13,14 @@ export interface SelectableModel {
   label: string;
 }
 
+export interface CatalogModelOption {
+  provider: ProviderId;
+  model: string;
+  label: string;
+  available: boolean;
+  unavailableReason?: string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ProvidersStore {
   readonly providers = signal<ProviderStatus[]>([]);
@@ -33,6 +41,25 @@ export class ProvidersStore {
             label: model.label,
           });
         }
+      }
+    }
+    return list;
+  });
+
+  readonly allInstalledModels = computed<CatalogModelOption[]>(() => {
+    const list: CatalogModelOption[] = [];
+    for (const provider of this.providers()) {
+      if (!provider.installed) {
+        continue;
+      }
+      for (const model of provider.modelCatalog.models) {
+        list.push({
+          provider: provider.provider,
+          model: model.id,
+          label: model.label,
+          available: model.available,
+          unavailableReason: model.unavailableReason,
+        });
       }
     }
     return list;

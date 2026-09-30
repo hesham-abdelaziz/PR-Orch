@@ -35,7 +35,8 @@ export const routes: Routes = [
       },
       {
         path: 'reviews/new',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./reviews/new-review/new-review-page.component').then((m) => m.NewReviewPageComponent),
       },
       {
         path: 'reviews/history',
