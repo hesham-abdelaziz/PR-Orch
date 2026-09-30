@@ -1,0 +1,100 @@
+# Review engine (`apps/api/src/reviews`, `apps/api/src/reports`)
+
+Coordinates one pull-request review from creation to a terminal state and
+produces the canonical, immutable report. All reviews are **static code
+inspection**: nothing here writes to Azure DevOps, modifies the inspected
+repository, or receives an Azure PAT.
+
+## Pipeline
+
+```
+createReview ─ validate request → active-job precheck → providers selectable → PR validate
+             → [mutex] re-check active → standards snapshot (once) → createJob + queued runs (one transaction)
+queued → preparing → reviewing → verifying → rendering → completed
+   └────────── any non-terminal state → failed | cancelling → cancelled
+```
+
+1. **preparing** – `ReviewWorkspacePort.prepare` (aborts on cancel).
+2. **reviewing** – up to `min(3, settings.maxParallelReviewers)` reviewer processes at once. Each reviewer gets an independent prompt (it never sees other reviewers or their findings). One malformed structured answer gets exactly **one** correction attempt; a second failure fails that reviewer only.
+3. Continue if **at least one** reviewer completed; otherwise the job fails (`All reviewers failed…`). Failed/timed-out reviewers become job warnings (“results are partial”).
+4. **verifying** – the main verifier receives every candidate (stable ids, reviewer origins). `verifier-report.assembler.ts` enforces: each candidate decided **exactly once** (accepted = 1 id, merged ≥ 2 ids, rejected ≥ 1); no unknown/duplicate ids; finding paths stay inside the checkout; finding ids and **origins are derived from the candidates**, never taken from model output. A violation earns the single correction attempt, then the job fails. With zero candidates the verifier is skipped and the report is `clean`.
+5. **rendering** – Markdown is rendered from the validated structured report only (`reports/report-renderer.service.ts`): HTML escaped, unsafe links/images removed, model text cannot forge headings, coverage exclusions and warnings disclosed, rejected claims only in the collapsed audit section.
+6. `completeJob` atomically moves `rendering → completed` and stores the report; if cancellation won the race it is refused and the job ends `cancelled` with no report.
+7. Always: workspace cleanup (failure keeps the job’s state, sets `cleanupPending`, adds a warning, and is retried by `retryPendingCleanups`), scratch schema-file removal, terminal SSE event.
+
+Overall risk = highest verified severity or `clean`. There are no numeric scores, confidence values, consensus votes or patch generation.
+
+## HTTP surface (full `api/` prefix is in the decorators — do **not** also set a global `api` prefix)
+
+| Route | Behavior |
+| --- | --- |
+| `POST /api/reviews` | 201 `ReviewJob` (state `queued`, one queued run per reviewer). 400 invalid body (`issues[]`), 409 `{activeReviewId}`, 422 provider/model not ready. PR-validation errors propagate unchanged for the platform’s filters. |
+| `GET /api/reviews/active` | 200 `ReviewJob`, or **204** when none. |
+| `GET /api/reviews` | 200 `{items:[{review,status,overallRisk,findingCount}], nextCursor}`. Query: `limit` (1–100, default 25), `cursor`, `status`, `risk`, `provider`, `repository`, `from`, `to`, `q`. Unknown keys → 400. |
+| `GET /api/reviews/:reviewId` | 200 `ReviewJob` / 404. |
+| `POST /api/reviews/:reviewId/cancel` | 200 `ReviewJob` (`cancelling` or already terminal; idempotent) / 404. |
+| `GET /api/reviews/:reviewId/events` | SSE. Unnamed messages, `data` = JSON `ReviewEvent`, `id` = sequence. First message is always `job.snapshot`; stream completes after the terminal state. |
+| `GET /api/reviews/:reviewId/report.md` | `text/markdown; charset=utf-8`, `attachment`, `nosniff`; 404 unless completed. |
+
+Authentication is the platform’s global guard; nothing here checks sessions.
+
+## What the platform (Codex) must supply
+
+Bind these tokens in a module visible to `ReviewsModule`/`ReportsModule` (for example a `@Global()` platform module), then import `ReviewsModule` in `AppModule`:
+
+| Token (`review-ports.ts` / `review-repository.ts`) | Contract |
+| --- | --- |
+| `REVIEW_REPOSITORY` | `ReviewRepository` backed by SQLite (see below). `InMemoryReviewRepository` is the executable reference. |
+| `REVIEW_WORKSPACE_PORT` | `prepare({reviewId, pullRequest, standards}, signal)` → `PreparedWorkspace`; `cleanup(workspaceId)` idempotent. `prepare` must remove anything it created if it throws. |
+| `REVIEW_STANDARDS_PORT` | `snapshotForReview(reviewId)` → immutable, hash-addressed copy (`storagePath`) + `StandardsMetadata`, or `null`. Called once per accepted job. |
+| `REVIEW_SETTINGS_PORT` | `get()` → `Settings` (frozen into the job at creation). |
+| `REVIEW_PULL_REQUEST_PORT` | `validate(url)` → `PullRequestSummary`, enforcing the hard PR limits. |
+
+`REVIEW_PROVIDER_PORT` is bound inside `ReviewsModule` to `ProviderRegistryService`. `PROVIDER_SNAPSHOT_STORE` (in `providers.module.ts`) may be overridden with a `provider_snapshots` table.
+
+**Workspace layout assumption:** provider cwd is `PreparedWorkspace.rootPath`; finding paths are reported relative to `checkoutPath ?? rootPath` and validated against it. The diff, metadata and technology-manifest files are read by absolute path from the prompt. Simplest compatible layout: `checkoutPath === rootPath`.
+
+### Entities and migration (`003-review-engine`)
+
+TypeORM is not installed on this branch; records are plain shapes in `entities/`. Map them to tables:
+
+- `review_jobs` (`ReviewJobRecord`): `id` PK; `state`; `pull_request` JSON; `main` JSON; `reviewers` JSON; `additional_instructions` NULL; `standards` JSON NULL; `standards_storage_path` NULL; `settings` JSON; `warnings` JSON; `exclusions` JSON; `failure_reason` NULL; `workspace_id` NULL; `cleanup_pending` bool; `overall_risk` NULL; `finding_count` NULL; `created_at`; `updated_at`; `completed_at` NULL. Index `created_at DESC, id DESC` for history paging.
+- `reviewer_runs` (`ReviewerRunRecord`): `id` PK; `job_id` FK; `role` (`reviewer`|`verifier`); `selection` JSON; `state`; `started_at`; `completed_at`; `warning`; `attempts`; `sanitized_log` (≤ 4 KiB, redacted); `result` JSON NULL.
+- `candidate_findings`: **PK (`job_id`, `id`)** — candidate ids are content-derived and repeat across jobs; `run_id` FK; `finding` JSON.
+- `final_findings`: **PK (`job_id`, `id`)**; `finding` JSON; `decision` JSON.
+- `reports` (`ReportRecord`): `job_id` PK/FK; `report` JSON; `markdown`; `duration_ms`; `created_at`. Never updated.
+
+Single-active-job guarantee (the database is the authority):
+
+```sql
+CREATE UNIQUE INDEX ux_review_jobs_single_active ON review_jobs ((1))
+  WHERE state NOT IN ('completed', 'failed', 'cancelled');
+```
+
+Atomicity the SQLite adapter must provide:
+
+- `createJob(record, initialRuns)`: one transaction inserting job + runs; a unique-index violation returns `{created:false, activeJobId}` and inserts nothing.
+- `transitionJob`: `UPDATE … WHERE id=? AND state=?` (compare-and-set); `applied:false` when 0 rows changed, returning the current row.
+- `completeJob`: one transaction — CAS `rendering → completed`, insert `reports` and `final_findings`, apply the patch; refuse (`applied:false`) when the job is no longer `rendering`.
+- `listJobsPendingCleanup`: **terminal** jobs with `cleanup_pending = 1`.
+- `queryJobs`: keyset pagination on (`created_at`, `id`) with the documented filters; `status` is derived by `history-status.ts` (`active`, `completed`, `completed_with_warnings`, `failed`, `cancelled`).
+
+Startup: `ReviewOrchestratorService.onApplicationBootstrap` runs recovery (jobs left active become `failed`, or `cancelled` if cancelling; the lock is freed; leftover workspaces are cleaned). Call `app.enableShutdownHooks()` so running reviews are cancelled and provider process trees are killed on exit.
+
+## Shared-contract observations (no contract was changed)
+
+- No response schemas exist for cancel, history items/pages, or the empty `active` case; the engine returns `ReviewJob`, `{items,nextCursor}` and 204 respectively. Consider adding schemas in a later contract commit.
+- `ReviewJob.reviewers` lists reviewer runs only; the verifier’s run state is not exposed to clients.
+- SSE has no verifier events; verifier progress is visible only as `verifying`.
+
+## Known limitations / deferred
+
+- More than ~1000 candidate findings cannot be verified in one pass (`VerifierOutput` allows 1000 decisions); realistic runs are far below this. No sharding.
+- The verifier is a single model call with one correction; no second-opinion pass.
+- History does one `listRuns` per row (≤ 100 rows); batch it in the SQL adapter if needed.
+- Provider CLI flag sets track the versions documented in `providers/README.md`; a CLI upgrade that renames a flag disables that provider at the next probe or fails the run with an actionable message rather than falling back to a less safe mode.
+- No live/paid provider test is included; an opt-in manual smoke review is the platform’s final-gate task.
+
+## Tests
+
+`npm --workspace @pr-orchestrator/api test -- providers reviews reports` (deterministic fake CLIs; no network, no paid calls).
