@@ -765,6 +765,20 @@ describe('ReviewOrchestratorService — cancellation', () => {
     expect(h.workspace.cleaned).toEqual([`ws-${id}`]);
   });
 
+  it('finishes an orphaned review (no pipeline in this process) when it is cancelled', async () => {
+    const repository = new InMemoryReviewRepository();
+    const h = await harness({ repository });
+    const orphan = jobRecord({ state: 'reviewing', workspaceId: 'ws-orphan', cleanupPending: true });
+    await repository.createJob(orphan);
+
+    const result = await h.orchestrator.cancelReview(orphan.id);
+
+    expect(result.state).toBe('cancelled');
+    expect((await repository.getJob(orphan.id))?.cleanupPending).toBe(false);
+    expect(h.workspace.cleaned).toEqual(['ws-orphan']);
+    expect(await repository.getActiveJob()).toBeNull();
+  });
+
   it('cancelling twice in a row is harmless', async () => {
     const h = await harness({ scripts: { codex: (r) => hangUntilAborted('codex', r), gemini: (r) => hangUntilAborted('gemini', r) } });
     const job = await h.orchestrator.createReview(h.request());

@@ -35,6 +35,8 @@ export class ReviewEventsService {
     if (isTerminal(state)) {
       for (const listener of Array.from(this.listeners.get(reviewId) ?? [])) listener.complete();
       this.listeners.delete(reviewId);
+      // Bounded memory: a late subscriber to a finished review only needs the snapshot.
+      this.sequences.delete(reviewId);
     }
   }
 

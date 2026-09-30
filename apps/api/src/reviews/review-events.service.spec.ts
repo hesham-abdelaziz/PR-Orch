@@ -146,4 +146,15 @@ describe('ReviewEventsService', () => {
     expect(second.received.map((event) => event.type)).toEqual(['job.snapshot', 'job.state_changed']);
     expect(service.listenerCount(REVIEW_ID)).toBe(1);
   });
+
+  it('releases per-review bookkeeping once the review is terminal', () => {
+    const service = new ReviewEventsService();
+    service.jobStateChanged(REVIEW_ID, 'preparing');
+    expect(service.currentSequence(REVIEW_ID)).toBe(1);
+
+    service.jobStateChanged(REVIEW_ID, 'failed');
+
+    expect(service.currentSequence(REVIEW_ID)).toBe(0);
+    expect(service.listenerCount(REVIEW_ID)).toBe(0);
+  });
 });
