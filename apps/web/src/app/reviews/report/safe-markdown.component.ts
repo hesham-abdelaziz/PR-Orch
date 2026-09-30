@@ -1,8 +1,26 @@
 import { Component, Input, OnChanges, SimpleChanges, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
-import { marked } from 'marked';
+import { Marked } from 'marked';
 import DOMPurify from 'dompurify';
+
+function escapeRawHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const parser = new Marked({
+  renderer: {
+    html(_token) {
+      // Discard raw HTML tokens at parse time
+      return '';
+    },
+  },
+});
 
 @Component({
   selector: 'app-safe-markdown',
@@ -127,7 +145,7 @@ export class SafeMarkdownComponent implements OnChanges {
 
   private readonly sanitizer = inject(DomSanitizer);
 
-  safeHtml: SafeHtml = '';
+  safeHtml: SafeHtml | string = '';
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['markdown']) {
@@ -142,7 +160,7 @@ export class SafeMarkdownComponent implements OnChanges {
     }
 
     try {
-      const dirtyHtml = marked.parse(this._markdown, { async: false }) as string;
+      const dirtyHtml = parser.parse(this._markdown, { async: false }) as string;
       const cleanHtml = DOMPurify.sanitize(dirtyHtml, {
         ALLOWED_TAGS: [
           'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'ul', 'ol', 'li',
@@ -155,7 +173,8 @@ export class SafeMarkdownComponent implements OnChanges {
 
       this.safeHtml = this.sanitizer.bypassSecurityTrustHtml(cleanHtml);
     } catch {
-      this.safeHtml = this.markdown;
+      // The error path renders content as escaped text, never trusted raw HTML
+      this.safeHtml = escapeRawHtml(this._markdown);
     }
   }
 }
