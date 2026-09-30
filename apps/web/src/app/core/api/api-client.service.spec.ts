@@ -175,4 +175,81 @@ describe('ApiClientService', () => {
       expect(apiErr.code).toBe('NETWORK_ERROR');
     }
   });
+
+  it('preserves exact text/markdown content when requesting text response', async () => {
+    const rawMarkdown = '# PR #101 Review Report\n\n- Finding 1: **Critical**\n- Evidence: `auth.go:42`\n';
+    fetchSpy.mockResolvedValueOnce(
+      new Response(rawMarkdown, {
+        status: 200,
+        headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+      }),
+    );
+
+    const result = await service.requestText({
+      method: 'GET',
+      path: '/api/reviews/123/report.md',
+    });
+
+    expect(result).toBe(rawMarkdown);
+  });
+
+  it('handles empty text response without converting to null or object', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response('', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      }),
+    );
+
+    const result = await service.requestText({
+      method: 'GET',
+      path: '/api/empty',
+    });
+
+    expect(result).toBe('');
+  });
+
+  it('throws ApiError on failed text/markdown request with status and error message', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response('Report not found', {
+        status: 404,
+        statusText: 'Not Found',
+        headers: { 'Content-Type': 'text/plain' },
+      }),
+    );
+
+    try {
+      await service.requestText({
+        method: 'GET',
+        path: '/api/reviews/999/report.md',
+      });
+      expect.fail('Expected requestText to throw ApiError');
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(ApiError);
+      const apiErr = err as ApiError;
+      expect(apiErr.statusCode).toBe(404);
+      expect(apiErr.message).toContain('Report not found');
+    }
+  });
+
+  it('rejects malformed JSON payload with MALFORMED_JSON error', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response('{ invalid json here', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    try {
+      await service.request({
+        method: 'GET',
+        path: '/api/malformed-json',
+      });
+      expect.fail('Expected request to throw ApiError for malformed JSON');
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(ApiError);
+      const apiErr = err as ApiError;
+      expect(apiErr.code).toBe('MALFORMED_JSON');
+    }
+  });
 });

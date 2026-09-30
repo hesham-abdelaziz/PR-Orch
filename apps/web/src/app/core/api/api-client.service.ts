@@ -8,7 +8,12 @@ export interface RequestOptions<T> {
   schema?: z.ZodType<T>;
   body?: unknown;
   headers?: Record<string, string>;
+  responseType?: 'json' | 'text';
 }
+
+export type RequestTextOptions = Omit<RequestOptions<string>, 'responseType' | 'schema'> & {
+  schema?: z.ZodType<string>;
+};
 
 @Injectable({ providedIn: 'root' })
 export class ApiClientService {
@@ -21,7 +26,15 @@ export class ApiClientService {
     };
   }
 
+  requestText(options: RequestTextOptions): Promise<string> {
+    return this.request<string>({
+      ...options,
+      responseType: 'text',
+    });
+  }
+
   async request<T>(options: RequestOptions<T>): Promise<T> {
+    const isText = options.responseType === 'text';
     const headers: Record<string, string> = {
       ...(options.headers || {}),
     };
@@ -50,24 +63,65 @@ export class ApiClientService {
       }
     }
 
-    let data: unknown = null;
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      try {
-        data = await response.json();
-      } catch {
-        data = null;
-      }
-    }
-
     if (!response.ok) {
-      const errObj = data && typeof data === 'object' ? (data as Record<string, unknown>) : {};
+      let errObj: Record<string, unknown> = {};
+      let errText = '';
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        try {
+          const json = await response.json();
+          if (json && typeof json === 'object') {
+            errObj = json as Record<string, unknown>;
+          }
+        } catch {
+          // Ignore parse failure on error body
+        }
+      } else {
+        try {
+          errText = await response.text();
+        } catch {
+          // Ignore text failure on error body
+        }
+      }
+
       const code = typeof errObj['code'] === 'string' ? errObj['code'] : `HTTP_${response.status}`;
       const message =
         typeof errObj['message'] === 'string'
           ? errObj['message']
-          : response.statusText || 'Request failed';
+          : (errText.trim() || response.statusText || 'Request failed');
       throw new ApiError(response.status, code, message, errObj['details']);
+    }
+
+    if (isText) {
+      const text = await response.text();
+      if (options.schema) {
+        const parseResult = options.schema.safeParse(text);
+        if (!parseResult.success) {
+          throw new ApiError(
+            500,
+            'SCHEMA_VALIDATION_ERROR',
+            'Server response failed schema validation',
+            parseResult.error.format(),
+          );
+        }
+        return parseResult.data;
+      }
+      return text as unknown as T;
+    }
+
+    let data: unknown = null;
+    if (response.status === 204) {
+      data = null;
+    } else {
+      try {
+        data = await response.json();
+      } catch {
+        throw new ApiError(
+          response.status,
+          'MALFORMED_JSON',
+          'Failed to parse server response as JSON',
+        );
+      }
     }
 
     if (options.schema) {
