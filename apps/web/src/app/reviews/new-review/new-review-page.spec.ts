@@ -220,4 +220,29 @@ describe('NewReviewPageComponent', () => {
     await component.onStartReview();
     expect(TestBed.inject(Router).navigate).toHaveBeenCalledWith(['/reviews/active']);
   });
+
+  it('labels line counts as unavailable pre-review when placeholder 0/0 is returned', async () => {
+    component.store.prSummary.set({
+      ...mockPrSummary,
+      additions: 0,
+      deletions: 0,
+    });
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Unavailable pre-review');
+    expect(el.textContent).not.toContain('+0');
+    expect(el.textContent).not.toContain('-0');
+  });
+
+  it('renders a link to active review when 409 conflict occurs', async () => {
+    component.store.submitError.set('Another review is already active');
+    component.store.activeReviewConflictId.set('job-active-999');
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const link = el.querySelector<HTMLAnchorElement>('.dock-error-link');
+    expect(link).toBeTruthy();
+    expect(link?.textContent).toContain('View active review');
+  });
 });

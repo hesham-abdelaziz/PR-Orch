@@ -212,4 +212,20 @@ describe('NewReviewStore', () => {
       }),
     );
   });
+
+  it('captures activeReviewConflictId when review creation encounters 409 conflict', async () => {
+    store.setPrUrl('https://dev.azure.com/acme/project/_git/repo/pullrequest/123');
+    store.prSummary.set(mockPrSummary);
+    store.setMainSelection({ provider: 'claude', model: 'claude-3-7-sonnet' });
+    store.setReviewerSelections([{ provider: 'codex', model: 'gpt-4o' }]);
+
+    const conflictErr = new ApiError(409, 'CONFLICT', 'Another review is already active', undefined, {
+      activeReviewId: 'active-job-xyz',
+    });
+    apiClientMock.request.mockRejectedValueOnce(conflictErr);
+
+    await expect(store.createReview()).rejects.toThrow();
+    expect(store.activeReviewConflictId()).toBe('active-job-xyz');
+    expect(store.submitError()).toBe('Another review is already active');
+  });
 });

@@ -226,11 +226,29 @@ export class ReviewHistoryPageComponent implements OnInit {
     this.error.set(null);
 
     try {
-      const data = await this.apiClient.request<ReviewJob[]>({
+      const data = await this.apiClient.request<
+        | ReviewJob[]
+        | {
+            items: Array<{
+              review: ReviewJob;
+              status?: string;
+              overallRisk?: string | null;
+              findingCount?: number | null;
+            }>;
+            nextCursor?: string | null;
+          }
+      >({
         method: 'GET',
         path: '/api/reviews',
       });
-      this.jobs.set(data ?? []);
+
+      if (Array.isArray(data)) {
+        this.jobs.set(data);
+      } else if (data && typeof data === 'object' && Array.isArray((data as any).items)) {
+        this.jobs.set((data as any).items.map((i: any) => i.review));
+      } else {
+        this.jobs.set([]);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error loading history';
       this.error.set(msg);

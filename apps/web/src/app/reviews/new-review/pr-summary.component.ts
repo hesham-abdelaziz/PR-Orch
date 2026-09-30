@@ -50,20 +50,27 @@ import { PullRequestSummary } from '@pr-orchestrator/contracts';
             <span class="metric-label">Scope</span>
             <span class="metric-value font-mono">{{ summary.changedFiles }} changed files</span>
           </div>
-          <div class="metric-card">
-            <span class="metric-label">Additions</span>
-            <span class="metric-value font-mono text-additions">+{{ summary.additions }}</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-label">Deletions</span>
-            <span class="metric-value font-mono text-deletions">-{{ summary.deletions }}</span>
-          </div>
-          <div class="metric-card">
-            <span class="metric-label">Net Delta</span>
-            <span class="metric-value font-mono text-delta">
-              {{ summary.additions - summary.deletions >= 0 ? '+' : '' }}{{ summary.additions - summary.deletions }}
-            </span>
-          </div>
+          @if (hasLineCounts()) {
+            <div class="metric-card">
+              <span class="metric-label">Additions</span>
+              <span class="metric-value font-mono text-additions">+{{ summary.additions }}</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Deletions</span>
+              <span class="metric-value font-mono text-deletions">-{{ summary.deletions }}</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Net Delta</span>
+              <span class="metric-value font-mono text-delta">
+                {{ summary.additions - summary.deletions >= 0 ? '+' : '' }}{{ summary.additions - summary.deletions }}
+              </span>
+            </div>
+          } @else {
+            <div class="metric-card">
+              <span class="metric-label">Line Changes</span>
+              <span class="metric-value font-mono text-muted" title="Line counts are unavailable pre-review from Azure PR iteration metadata">Unavailable pre-review</span>
+            </div>
+          }
         </div>
       </div>
     }
@@ -248,6 +255,11 @@ import { PullRequestSummary } from '@pr-orchestrator/contracts';
       color: $accent-primary;
     }
 
+    .text-muted {
+      color: $text-muted;
+      font-size: 13px;
+    }
+
     .truncate {
       @include truncate;
     }
@@ -259,6 +271,11 @@ import { PullRequestSummary } from '@pr-orchestrator/contracts';
 })
 export class PrSummaryComponent {
   @Input() summary: PullRequestSummary | null = null;
+
+  hasLineCounts(): boolean {
+    if (!this.summary) return false;
+    return this.summary.additions > 0 || this.summary.deletions > 0;
+  }
 
   getAuthorInitials(name: string): string {
     if (!name) return 'PR';

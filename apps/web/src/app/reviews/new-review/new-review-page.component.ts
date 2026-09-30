@@ -162,6 +162,11 @@ import { AdditionalInstructionsComponent } from './additional-instructions.compo
             <div class="dock-error" role="alert">
               <span>⚠</span>
               <span>{{ store.submitError() }}</span>
+              @if (store.activeReviewConflictId()) {
+                <a [routerLink]="['/reviews', store.activeReviewConflictId()]" class="dock-error-link">
+                  View active review →
+                </a>
+              }
             </div>
           }
 
@@ -385,6 +390,17 @@ import { AdditionalInstructionsComponent } from './additional-instructions.compo
       display: flex;
       align-items: center;
       gap: 6px;
+
+      .dock-error-link {
+        color: $accent-primary;
+        text-decoration: underline;
+        margin-left: 6px;
+        font-weight: 600;
+
+        &:hover {
+          color: $accent-primary-hover;
+        }
+      }
     }
 
     .dock-actions {

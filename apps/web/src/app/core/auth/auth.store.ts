@@ -104,32 +104,29 @@ export class AuthStore {
     this.loading.set(true);
     this.error.set(null);
     try {
-      const session = await this.apiClient.request({
+      await this.apiClient.request({
         method: 'POST',
         path: '/api/auth/logout',
-        schema: AuthSessionSchema,
       });
-      this.session.set(session);
     } catch {
-      this.session.set({ authenticated: false, setupRequired: false });
+      // In all cases, reset local session on logout
     } finally {
+      this.session.set({ authenticated: false, setupRequired: false });
       this.loading.set(false);
     }
   }
 
-  async changePassword(request: ChangePasswordRequest): Promise<AuthSession> {
+  async changePassword(request: ChangePasswordRequest): Promise<void> {
     ChangePasswordRequestSchema.parse(request);
     this.loading.set(true);
     this.error.set(null);
     try {
-      const session = await this.apiClient.request({
+      await this.apiClient.request({
         method: 'PUT',
         path: '/api/auth/password',
         body: request,
-        schema: AuthSessionSchema,
       });
-      this.session.set(session);
-      return session;
+      this.session.set({ authenticated: false, setupRequired: false });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Change password failed';
       this.error.set(message);

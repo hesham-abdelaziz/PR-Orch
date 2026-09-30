@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, effect, inject } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import { ReviewEvent, ReviewEventSchema } from '@pr-orchestrator/contracts';
 import { AuthStore } from '../auth/auth.store';
@@ -7,7 +7,7 @@ import { AuthStore } from '../auth/auth.store';
   providedIn: 'root',
 })
 export class ReviewEventsService {
-  private readonly authStore = inject(AuthStore);
+  private readonly authStore = inject(AuthStore, { optional: true });
 
   private eventSource: EventSource | null = null;
   private eventSubject = new Subject<ReviewEvent>();
@@ -16,6 +16,16 @@ export class ReviewEventsService {
   private isTerminal = false;
   private retryAttempts = 0;
   private retryTimeout: any = null;
+
+  constructor() {
+    if (this.authStore && typeof this.authStore.isAuthenticated === 'function') {
+      effect(() => {
+        if (!this.authStore?.isAuthenticated()) {
+          this.disconnect();
+        }
+      });
+    }
+  }
 
   connect(reviewId: string): Observable<ReviewEvent> {
     if (this.currentReviewId === reviewId && this.eventSource) {
@@ -72,12 +82,15 @@ export class ReviewEventsService {
 
     const reviewEvent = validation.data;
 
-    // Monotonic sequence enforcement: ignore duplicates or regressions
-    if (reviewEvent.sequence <= this.lastSequence) {
-      return;
+    // Snapshot recovery vs monotonic sequence enforcement
+    if (reviewEvent.type === 'job.snapshot') {
+      this.lastSequence = reviewEvent.sequence;
+    } else {
+      if (reviewEvent.sequence <= this.lastSequence) {
+        return;
+      }
+      this.lastSequence = reviewEvent.sequence;
     }
-
-    this.lastSequence = reviewEvent.sequence;
     this.retryAttempts = 0; // Successful event resets retry counter
 
     this.eventSubject.next(reviewEvent);

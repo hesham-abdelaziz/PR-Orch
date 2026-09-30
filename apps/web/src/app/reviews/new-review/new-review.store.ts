@@ -41,6 +41,7 @@ export class NewReviewStore {
 
   readonly submitting = signal<boolean>(false);
   readonly submitError = signal<string | null>(null);
+  readonly activeReviewConflictId = signal<string | null>(null);
 
   readonly missingStandards = computed(() => !this.standards());
 
@@ -248,6 +249,7 @@ export class NewReviewStore {
 
     this.submitting.set(true);
     this.submitError.set(null);
+    this.activeReviewConflictId.set(null);
 
     const payload: CreateReviewRequest = {
       pullRequestUrl: this.prUrl().trim(),
@@ -270,6 +272,9 @@ export class NewReviewStore {
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         this.submitError.set(err.message);
+        if (err.statusCode === 409 && typeof err.data?.['activeReviewId'] === 'string') {
+          this.activeReviewConflictId.set(err.data['activeReviewId']);
+        }
       } else {
         this.submitError.set(err instanceof Error ? err.message : 'Failed to create review');
       }

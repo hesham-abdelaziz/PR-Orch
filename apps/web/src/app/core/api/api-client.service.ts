@@ -89,7 +89,7 @@ export class ApiClientService {
         typeof errObj['message'] === 'string'
           ? errObj['message']
           : (errText.trim() || response.statusText || 'Request failed');
-      throw new ApiError(response.status, code, message, errObj['details']);
+      throw new ApiError(response.status, code, message, errObj['details'], errObj);
     }
 
     if (isText) {
