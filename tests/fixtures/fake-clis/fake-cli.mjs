@@ -164,9 +164,11 @@ async function main() {
   }
 }
 
-const exitCode = await main();
-if (exitCode !== null) {
-  process.exitCode = exitCode;
-  // Do not linger on open handles from stdin readers.
-  process.stdin.destroy();
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const exitCode = await main();
+  if (exitCode !== null) {
+    process.exitCode = exitCode;
+    // Do not linger on open handles from stdin readers.
+    process.stdin.destroy();
+  }
 }
