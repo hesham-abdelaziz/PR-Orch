@@ -1,0 +1,57 @@
+// PR Review Orchestrator - Design Tokens (Dark Developer Tool Theme)
+
+// Surface Colors
+$bg-canvas: #0d1117;
+$bg-surface-1: #161b22;
+$bg-surface-2: #21262d;
+$bg-surface-3: #30363d;
+$bg-surface-elevated: #262a31;
+
+// Text Colors
+$text-primary: #dfe2eb;
+$text-secondary: #8b949e;
+$text-muted: #6e7681;
+$text-inverse: #0d1117;
+
+// Border Colors
+$border-subtle: #21262d;
+$border-default: #30363d;
+$border-focus: #38bdf8;
+
+// Primary Accent
+$accent-primary: #38bdf8;
+$accent-primary-hover: #7bd0ff;
+$accent-primary-bg: rgba(56, 189, 248, 0.12);
+
+// Verifier / Master Accent
+$accent-verifier: #a371f7;
+$accent-verifier-bg: rgba(163, 113, 247, 0.15);
+
+// Provider Colors
+$provider-claude: #d2a8ff;
+$provider-claude-bg: rgba(210, 168, 255, 0.15);
+$provider-codex: #38bdf8;
+$provider-codex-bg: rgba(56, 189, 248, 0.15);
+$provider-gemini: #67df70;
+$provider-gemini-bg: rgba(103, 223, 112, 0.15);
+
+// Severity & State Colors
+$severity-critical: #f85149;
+$severity-critical-bg: rgba(248, 81, 73, 0.15);
+$severity-high: #f97316;
+$severity-high-bg: rgba(249, 115, 22, 0.15);
+$severity-medium: #f59e0b;
+$severity-medium-bg: rgba(245, 158, 11, 0.15);
+$severity-low: #38bdf8;
+$severity-low-bg: rgba(56, 189, 248, 0.15);
+$status-clean: #3fb950;
+$status-clean-bg: rgba(63, 185, 80, 0.15);
+
+// Typography
+$font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+$font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+// Layout
+$sidebar-width: 260px;
+$header-height: 52px;
+$min-content-width: 764px;

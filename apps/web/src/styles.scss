@@ -1,1 +1,158 @@
-/* You can add global styles to this file, and also import other style files */
+@use './styles/tokens' as *;
+@use './styles/mixins' as *;
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  min-width: 1024px;
+  background-color: $bg-canvas;
+  color: $text-primary;
+  font-family: $font-sans;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: $accent-primary;
+  text-decoration: none;
+  @include focus-ring;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  @include focus-ring;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 13px;
+  color: $text-primary;
+  background-color: $bg-surface-2;
+  border: 1px solid $border-default;
+  border-radius: 6px;
+  padding: 8px 12px;
+  @include focus-ring;
+
+  &::placeholder {
+    color: $text-muted;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+code,
+pre,
+kbd {
+  font-family: $font-mono;
+}
+
+// Global utility classes
+.error-banner {
+  background-color: $severity-critical-bg;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  color: #ffb4ab;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.warning-banner {
+  background-color: $severity-medium-bg;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: #fce1a9;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.read-only-badge {
+  @include mono-badge;
+  background-color: rgba(56, 189, 248, 0.12);
+  color: $accent-primary;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.btn-primary {
+  background-color: $accent-primary;
+  color: #002b3d;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  transition: background-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background-color: $accent-primary-hover;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.btn-secondary {
+  background-color: $bg-surface-3;
+  color: $text-primary;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid $border-default;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background-color: #3c434c;
+    border-color: #484f58;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.btn-danger {
+  background-color: $severity-critical-bg;
+  color: #ffb4ab;
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+
+  &:hover:not(:disabled) {
+    background-color: rgba(248, 81, 73, 0.25);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
