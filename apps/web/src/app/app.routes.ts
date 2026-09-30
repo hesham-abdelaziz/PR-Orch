@@ -44,7 +44,8 @@ export const routes: Routes = [
       },
       {
         path: 'reviews/active',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./reviews/active-review/active-review-page.component').then((m) => m.ActiveReviewPageComponent),
       },
       {
         path: 'reviews/:reviewId',
