@@ -1,8 +1,9 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { ReviewFinding, ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
+import { ReviewFinding, ReviewJob, ReviewJobSchema, VerifiedReport } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../../core/api/api-client.service';
+import { ReportIntegrationService } from './report-integration.service';
 import { ReportMetadataComponent } from './report-metadata.component';
 import { ReportTocComponent } from './report-toc.component';
 import { RejectedClaimsAuditComponent } from './rejected-claims-audit.component';
@@ -70,6 +71,17 @@ const SEVERITY_WEIGHT: Record<string, number> = {
             </a>
           </div>
         </div>
+
+        <!-- Action Error Banner -->
+        @if (actionError()) {
+          <div class="action-error-banner font-mono" role="alert">
+            <span class="error-msg">⚠ {{ actionError() }}</span>
+            <div class="error-actions">
+              <button class="btn btn-secondary btn-sm" (click)="retryLastAction()">Retry</button>
+              <button class="btn-dismiss" (click)="actionError.set(null)" aria-label="Dismiss error">✕</button>
+            </div>
+          </div>
+        }
 
         <!-- Main Content Grid with TOC Sidebar -->
         <div class="report-layout">
@@ -376,12 +388,39 @@ const SEVERITY_WEIGHT: Record<string, number> = {
       .error-title { font-size: 12px; color: $severity-critical; font-weight: 700; }
     }
 
+    .action-error-banner {
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid rgba(248, 81, 73, 0.3);
+      border-radius: 6px;
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      color: $severity-critical;
+      font-size: 12px;
+
+      .error-msg { font-weight: 500; }
+      .error-actions { display: flex; align-items: center; gap: 8px; }
+      .btn-sm { padding: 4px 10px; font-size: 11px; }
+      .btn-dismiss {
+        background: transparent;
+        border: none;
+        color: $text-muted;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 4px;
+        &:hover { color: $text-primary; }
+      }
+    }
+
     .font-mono { font-family: $font-mono; }
   `],
 })
 export class ReportPageComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly apiClient = inject(ApiClientService);
+  private readonly reportIntegration = inject(ReportIntegrationService);
   private readonly router = inject(Router);
 
   job = signal<ReviewJob | null>(null);
@@ -390,6 +429,8 @@ export class ReportPageComponent implements OnInit {
   error = signal<string | null>(null);
   copying = signal<boolean>(false);
   copySuccess = signal<boolean>(false);
+  actionError = signal<string | null>(null);
+  private lastAction: 'copy' | 'download' | null = null;
 
   sortedFindings = computed<ReviewFinding[]>(() => {
     const findings = this.report()?.findings ?? [];
@@ -416,14 +457,20 @@ export class ReportPageComponent implements OnInit {
 
     try {
       const [jobData, reportData] = await Promise.all([
-        this.apiClient.request<ReviewJob>({ method: 'GET', path: `/api/reviews/${reviewId}` }),
-        this.apiClient.request<VerifiedReport>({ method: 'GET', path: `/api/reviews/${reviewId}/report` }),
+        this.apiClient.request<ReviewJob>({
+          method: 'GET',
+          path: `/api/reviews/${reviewId}`,
+          schema: ReviewJobSchema,
+        }),
+        this.reportIntegration.getStructuredReport(reviewId),
       ]);
       this.job.set(jobData);
       this.report.set(reportData);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error loading report';
       this.error.set(msg);
+      this.job.set(null);
+      this.report.set(null);
     } finally {
       this.loading.set(false);
     }
@@ -434,23 +481,22 @@ export class ReportPageComponent implements OnInit {
     if (!reviewId) return;
 
     this.copying.set(true);
-    try {
-      let mdContent: string;
-      try {
-        mdContent = await this.apiClient.request<string>({
-          method: 'GET',
-          path: `/api/reviews/${reviewId}/report.md`,
-        });
-      } catch {
-        mdContent = this.generateFallbackMarkdown();
-      }
+    this.actionError.set(null);
+    this.lastAction = 'copy';
 
-      await navigator.clipboard.writeText(typeof mdContent === 'string' ? mdContent : JSON.stringify(mdContent));
+    try {
+      const mdContent = await this.apiClient.requestText({
+        method: 'GET',
+        path: `/api/reviews/${reviewId}/report.md`,
+      });
+
+      await navigator.clipboard.writeText(mdContent);
       this.copySuccess.set(true);
       setTimeout(() => this.copySuccess.set(false), 2500);
-    } catch {
-      // Fallback
+    } catch (err: unknown) {
       this.copySuccess.set(false);
+      const msg = err instanceof Error ? err.message : 'Failed to copy Markdown report';
+      this.actionError.set(`Copy failed: ${msg}. You can retry.`);
     } finally {
       this.copying.set(false);
     }
@@ -460,19 +506,16 @@ export class ReportPageComponent implements OnInit {
     const reviewId = this.job()?.id;
     if (!reviewId) return;
 
-    try {
-      let mdContent: string;
-      try {
-        mdContent = await this.apiClient.request<string>({
-          method: 'GET',
-          path: `/api/reviews/${reviewId}/report.md`,
-        });
-      } catch {
-        mdContent = this.generateFallbackMarkdown();
-      }
+    this.actionError.set(null);
+    this.lastAction = 'download';
 
-      const text = typeof mdContent === 'string' ? mdContent : JSON.stringify(mdContent);
-      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+    try {
+      const mdContent = await this.apiClient.requestText({
+        method: 'GET',
+        path: `/api/reviews/${reviewId}/report.md`,
+      });
+
+      const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -481,21 +524,17 @@ export class ReportPageComponent implements OnInit {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error('Download failed:', e);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to download Markdown report';
+      this.actionError.set(`Download failed: ${msg}. You can retry.`);
     }
   }
 
-  private generateFallbackMarkdown(): string {
-    const job = this.job();
-    const rep = this.report();
-    if (!job || !rep) return '';
-
-    return `# PR #${job.pullRequest.pullRequestId}: ${job.pullRequest.title}\n\n` +
-      `**Risk:** ${rep.overallRisk.toUpperCase()}\n` +
-      `**Verifier:** ${job.main.model}\n\n` +
-      `## Executive Summary\n${rep.executiveSummary}\n\n` +
-      `## Verified Findings (${rep.findings.length})\n` +
-      rep.findings.map(f => `### [${f.severity.toUpperCase()}] ${f.title}\n- **Location:** \`${f.filePath}:${f.location.startLine}-${f.location.endLine}\`\n- **Evidence:** ${f.evidence}\n- **Impact:** ${f.impact}\n- **Suggested Fix:** ${f.suggestedFix}`).join('\n\n');
+  retryLastAction(): void {
+    if (this.lastAction === 'copy') {
+      this.copyMarkdown();
+    } else if (this.lastAction === 'download') {
+      this.downloadMarkdown();
+    }
   }
 }

@@ -2,14 +2,13 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, provideRouter } from '@angular/router';
 import { ReportPageComponent } from './report-page.component';
 import { ApiClientService } from '../../core/api/api-client.service';
+import { ReportIntegrationService } from './report-integration.service';
 import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
 
 describe('ReportPageComponent', () => {
   let fixture: ComponentFixture<ReportPageComponent>;
   let component: ReportPageComponent;
-  let apiClientMock: {
-    request: ReturnType<typeof vi.fn>;
-  };
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   const reviewId = '123e4567-e89b-12d3-a456-426614174099';
 
@@ -36,7 +35,7 @@ describe('ReportPageComponent', () => {
     main: { provider: 'claude', model: 'claude-3-7-sonnet' },
     reviewers: [
       {
-        id: 'rev-1',
+        id: '123e4567-e89b-12d3-a456-426614174001',
         selection: { provider: 'codex', model: 'gpt-4o' },
         state: 'completed',
         startedAt: '2026-09-30T10:00:00.000Z',
@@ -44,7 +43,7 @@ describe('ReportPageComponent', () => {
         warning: null,
       },
       {
-        id: 'rev-2',
+        id: '123e4567-e89b-12d3-a456-426614174002',
         selection: { provider: 'gemini', model: 'gemini-1.5-pro' },
         state: 'completed',
         startedAt: '2026-09-30T10:00:00.000Z',
@@ -65,7 +64,7 @@ describe('ReportPageComponent', () => {
     executiveSummary: 'This PR introduces OAuth2 token exchange with high overall security risk due to improper token invalidation and concurrency race in the cache.',
     findings: [
       {
-        id: 'f-1',
+        id: '123e4567-e89b-12d3-a456-426614174011',
         title: 'Missing revocation check during token exchange',
         severity: 'critical',
         filePath: 'src/auth/token_exchange.go',
@@ -77,7 +76,7 @@ describe('ReportPageComponent', () => {
         origins: [{ provider: 'codex', model: 'gpt-4o' }, { provider: 'gemini', model: 'gemini-1.5-pro' }],
       },
       {
-        id: 'f-2',
+        id: '123e4567-e89b-12d3-a456-426614174012',
         title: 'Concurrent map read/write in JWKS memory cache',
         severity: 'high',
         filePath: 'src/jwks/cache.go',
@@ -90,7 +89,7 @@ describe('ReportPageComponent', () => {
     ],
     decisions: [
       {
-        candidateIds: ['cand-1'],
+        candidateIds: ['123e4567-e89b-12d3-a456-426614174021'],
         verdict: 'rejected',
         rationale: 'Reviewer claimed SQL injection, but parameter binding is enforced by GORM ORM.',
       },
@@ -102,29 +101,44 @@ describe('ReportPageComponent', () => {
     exclusions: [{ path: 'vendor/**', reason: 'Third-party dependencies excluded' }],
   };
 
-  beforeEach(async () => {
-    apiClientMock = {
-      request: vi.fn(),
-    };
+  const defaultFetchHandler = (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === `/api/reviews/${reviewId}`) {
+      return Promise.resolve(
+        new Response(JSON.stringify(mockJob), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    }
+    if (url === `/api/reviews/${reviewId}/report`) {
+      return Promise.resolve(
+        new Response(JSON.stringify(mockReport), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    }
+    if (url === `/api/reviews/${reviewId}/report.md`) {
+      return Promise.resolve(
+        new Response('# PR #4819 Markdown Report Content', {
+          status: 200,
+          headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+        }),
+      );
+    }
+    return Promise.resolve(new Response('Not Found', { status: 404 }));
+  };
 
-    apiClientMock.request.mockImplementation((opts) => {
-      if (opts.path === `/api/reviews/${reviewId}`) {
-        return Promise.resolve(mockJob);
-      }
-      if (opts.path === `/api/reviews/${reviewId}/report`) {
-        return Promise.resolve(mockReport);
-      }
-      if (opts.path === `/api/reviews/${reviewId}/report.md`) {
-        return Promise.resolve('# PR #4819 Markdown Report Content');
-      }
-      return Promise.resolve({});
-    });
+  beforeEach(async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(defaultFetchHandler);
 
     await TestBed.configureTestingModule({
       imports: [ReportPageComponent],
       providers: [
         provideRouter([]),
-        { provide: ApiClientService, useValue: apiClientMock },
+        ApiClientService,
+        ReportIntegrationService,
         {
           provide: ActivatedRoute,
           useValue: {
@@ -139,6 +153,10 @@ describe('ReportPageComponent', () => {
     fixture.detectChanges();
     await component.loadReportData();
     fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders executive summary, metadata, and overall risk badge', () => {
@@ -190,11 +208,17 @@ describe('ReportPageComponent', () => {
       acceptedCount: 0,
     };
 
-    apiClientMock.request.mockImplementation((opts) => {
-      if (opts.path === `/api/reviews/${reviewId}/report`) {
-        return Promise.resolve(cleanReport);
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(cleanReport), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
       }
-      return Promise.resolve(mockJob);
+      return defaultFetchHandler(input);
     });
 
     await component.loadReportData();
@@ -202,5 +226,174 @@ describe('ReportPageComponent', () => {
 
     const el = fixture.nativeElement as HTMLElement;
     expect(el.textContent).toContain('No Verified Findings');
+  });
+
+  it('handles copy markdown with exact canonical backend markdown and without null or JSON encoding', async () => {
+    let copiedText = '';
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn((text: string) => {
+          copiedText = text;
+          return Promise.resolve();
+        }),
+      },
+    });
+
+    await component.copyMarkdown();
+    fixture.detectChanges();
+
+    expect(copiedText).toBe('# PR #4819 Markdown Report Content');
+    expect(copiedText).not.toBe('null');
+    expect(copiedText).not.toContain('"# PR #4819');
+    expect(component.copySuccess()).toBe(true);
+    expect(component.actionError()).toBeNull();
+  });
+
+  it('handles failed copy request without fabricating markdown, setting actionable error and allowing retry', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report.md`) {
+        return Promise.resolve(new Response('Service Unavailable', { status: 503 }));
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.copyMarkdown();
+    fixture.detectChanges();
+
+    expect(writeTextMock).not.toHaveBeenCalled();
+    expect(component.copySuccess()).toBe(false);
+    expect(component.actionError()).toContain('Copy failed');
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.action-error-banner')).toBeTruthy();
+
+    // Now test retry: backend recovers
+    fetchSpy.mockImplementation(defaultFetchHandler);
+    component.retryLastAction();
+    await new Promise((r) => setTimeout(r, 10));
+    fixture.detectChanges();
+
+    expect(writeTextMock).toHaveBeenCalledWith('# PR #4819 Markdown Report Content');
+    expect(component.copySuccess()).toBe(true);
+  });
+
+  it('handles download markdown using real Response text/markdown and does not fabricate download on failure', async () => {
+    let createdBlobText = '';
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blob.text().then((t) => (createdBlobText = t));
+      return 'blob:mock-url';
+    });
+    URL.revokeObjectURL = vi.fn();
+
+    await component.downloadMarkdown();
+    fixture.detectChanges();
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(createdBlobText).toBe('# PR #4819 Markdown Report Content');
+    expect(createdBlobText).not.toBe('null');
+
+    // Test failed download
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report.md`) {
+        return Promise.resolve(new Response('Not Found', { status: 404 }));
+      }
+      return defaultFetchHandler(input);
+    });
+
+    const createObjectURLCount = (URL.createObjectURL as any).mock.calls.length;
+    await component.downloadMarkdown();
+    fixture.detectChanges();
+
+    expect((URL.createObjectURL as any).mock.calls.length).toBe(createObjectURLCount);
+    expect(component.actionError()).toContain('Download failed');
+
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+  });
+
+  it('produces a controlled error when ReviewJob response fails schema validation and does not render findings', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: 'invalid-job', state: 'unknown_state' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.error()).toBeTruthy();
+    expect(component.job()).toBeNull();
+    expect(component.report()).toBeNull();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.error-banner')).toBeTruthy();
+    expect(el.querySelectorAll('.finding-card').length).toBe(0);
+  });
+
+  it('produces a controlled error when VerifiedReport fails schema validation and does not render findings', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ reviewId: 'not-a-uuid', findings: 'invalid' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.error()).toBeTruthy();
+    expect(component.job()).toBeNull();
+    expect(component.report()).toBeNull();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.error-banner')).toBeTruthy();
+    expect(el.querySelectorAll('.finding-card').length).toBe(0);
+  });
+
+  it('handles absent structured-report endpoint (404) gracefully with error banner and retry action', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ message: 'Route GET /api/reviews/:reviewId/report not found' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.error()).toBeTruthy();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.error-banner')).toBeTruthy();
+    expect(el.querySelectorAll('.finding-card').length).toBe(0);
   });
 });

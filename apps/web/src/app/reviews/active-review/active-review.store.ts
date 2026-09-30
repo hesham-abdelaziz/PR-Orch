@@ -231,6 +231,7 @@ export class ActiveReviewStore {
       await this.apiClient.request({
         method: 'POST',
         path: `/api/reviews/${currentJob.id}/cancel`,
+        schema: ReviewJobSchema,
       });
     } catch (err: unknown) {
       this.cancelling.set(false);
