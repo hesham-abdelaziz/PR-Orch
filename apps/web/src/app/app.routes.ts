@@ -1,4 +1,3 @@
-import { Component } from '@angular/core';
 import { Routes } from '@angular/router';
 import { authGuard } from './core/auth/auth.guard';
 import { signedOutGuard } from './core/auth/signed-out.guard';
@@ -6,11 +5,6 @@ import { AppShellComponent } from './layout/app-shell.component';
 import { SetupPageComponent } from './auth/setup-page.component';
 import { LoginPageComponent } from './auth/login-page.component';
 
-@Component({
-  standalone: true,
-  template: `<div class="p-6">Loading module...</div>`,
-})
-export class RoutePlaceholderComponent {}
 
 export const routes: Routes = [
   {
@@ -40,7 +34,8 @@ export const routes: Routes = [
       },
       {
         path: 'reviews/history',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./reviews/history/review-history-page.component').then((m) => m.ReviewHistoryPageComponent),
       },
       {
         path: 'reviews/active',
@@ -49,7 +44,8 @@ export const routes: Routes = [
       },
       {
         path: 'reviews/:reviewId',
-        component: RoutePlaceholderComponent,
+        loadComponent: () =>
+          import('./reviews/report/report-page.component').then((m) => m.ReportPageComponent),
       },
       {
         path: 'standards',
