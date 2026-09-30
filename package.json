@@ -15,5 +15,9 @@
     "test:contracts": "npm --workspace @pr-orchestrator/contracts run test",
     "build": "npm --workspace @pr-orchestrator/contracts run build && npm --workspace @pr-orchestrator/api run build && npm --workspace @pr-orchestrator/web run build",
     "e2e": "npm run e2e --workspaces --if-present"
+  },
+  "allowScripts": {
+    "argon2@0.45.1": true,
+    "better-sqlite3@12.11.1": true
   }
 }
