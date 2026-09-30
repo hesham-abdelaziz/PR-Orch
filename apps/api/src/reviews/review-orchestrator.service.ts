@@ -53,6 +53,12 @@ import { FindingNormalizerService } from './output/finding-normalizer.service.js
 import { ProviderOutputParser, type CorrectionNeededError } from './output/provider-output.parser.js';
 import { redactModelOutput } from './output/redact-model-output.js';
 import {
+  FileSystemCheckoutInspectorFactory,
+  type CheckoutInspector,
+  type CheckoutInspectorFactory,
+} from './output/checkout-inspector.js';
+import { checkFindingLocation } from './output/finding-evidence.validator.js';
+import {
   REVIEWER_OUTPUT_JSON_SCHEMA_TEXT,
   VERIFIER_OUTPUT_JSON_SCHEMA_TEXT,
 } from './output/provider-json-schema.js';
@@ -75,6 +81,8 @@ export interface ReviewOrchestratorOptions {
    * the saved Azure PAT. Defaults to secret-looking environment variables.
    */
   secretValues?: () => readonly string[];
+  /** Read-only access to prepared checkouts for location and evidence checks. */
+  checkoutInspectors?: CheckoutInspectorFactory;
 }
 
 /** The product-wide ceiling on concurrent reviewer processes. */
@@ -99,6 +107,10 @@ interface Runtime {
 interface ReadyWorkspace {
   prepared: PreparedWorkspace;
   layout: WorkspaceLayout;
+  /** Reads the immutable checkout; finding locations are validated against it. */
+  inspector: CheckoutInspector;
+  /** Paths the workspace excluded from detailed inspection (trusted metadata). */
+  excludedPaths: ReadonlySet<string>;
 }
 
 interface ReviewerOutcome {
@@ -124,6 +136,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private readonly newId: () => string;
   private readonly scratchRoot: string;
   private readonly secretValues: () => readonly string[];
+  private readonly checkoutInspectors: CheckoutInspectorFactory;
 
   constructor(
     @Inject(REVIEW_REPOSITORY) private readonly repository: ReviewRepository,
@@ -145,6 +158,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     this.newId = options.idFactory ?? randomUUID;
     this.scratchRoot = options.scratchRoot ?? tmpdir();
     this.secretValues = options.secretValues ?? (() => collectSecretValues(process.env));
+    this.checkoutInspectors = options.checkoutInspectors ?? new FileSystemCheckoutInspectorFactory();
     this.stateMachine = new JobStateMachine(repository, this.clock);
     this.lock = new ReviewLockService(repository, this.stateMachine);
   }
@@ -410,7 +424,12 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       return null;
     }
 
-    return { prepared, layout };
+    return {
+      prepared,
+      layout,
+      inspector: this.checkoutInspectors.forCheckout(layout.checkoutRoot),
+      excludedPaths: new Set(prepared.exclusions.map((exclusion) => exclusion.path)),
+    };
   }
 
   // --------------------------------------------------------------- reviewers
@@ -485,16 +504,23 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
       const parsed = this.parser.parseReviewer({ provider: selection.provider, rawOutput: result.rawOutput });
       if (parsed.ok) {
-        const { result: normalized, dropped } = this.normalizer.normalizeReviewer({
+        const { result: shaped, dropped } = this.normalizer.normalizeReviewer({
           reviewer: selection,
           workspaceRoot: checkout,
           // Redacted once here, so candidates, run results, the verifier prompt,
           // reports, logs and events only ever see redacted model text.
           output: redactModelOutput(parsed.value, this.secretValues()),
         });
+        const located = await this.keepLocatable(shaped.findings, ready);
+        const normalized = { ...shaped, findings: located.kept };
         const warnings: string[] = [];
         if (dropped.length > 0) {
           warnings.push(`Reviewer ${tag} discarded ${dropped.length} finding(s) or exclusion(s) with invalid paths or fields.`);
+        }
+        if (located.discarded.length > 0) {
+          warnings.push(
+            `Reviewer ${tag} discarded ${located.discarded.length} finding(s) whose file or line range does not exist or is not inspectable in the checkout (${this.safeText(located.discarded.slice(0, 3).join('; '), 400)}).`,
+          );
         }
         for (const warning of normalized.warnings.slice(0, MAX_REVIEWER_WARNINGS)) {
           warnings.push(`Reviewer ${tag}: ${this.safeText(warning)}`);
@@ -601,13 +627,15 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         workspaceRoot: checkout,
         jobWarnings: ctx.warnings,
         exclusions: ctx.exclusions,
+        excludedPaths: ready.excludedPaths,
         normalizer: this.normalizer,
+        inspector: ready.inspector,
       });
 
     if (!(await this.advance(ctx, 'verifying', { warnings: ctx.warnings, exclusions: ctx.exclusions }))) return null;
 
     if (candidates.length === 0) {
-      const empty = assembleWith({ summary: 'No reviewer reported candidate findings.', decisions: [], warnings: [] });
+      const empty = await assembleWith({ summary: 'No reviewer reported candidate findings.', decisions: [], warnings: [] });
       if (!empty.ok) throw new Error('Could not assemble an empty report.');
       await this.saveRun(verifierRun, {
         state: 'completed',
@@ -678,7 +706,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const parsed = this.parser.parseVerifier({ provider: selection.provider, rawOutput: result.rawOutput });
       let issues: string[];
       if (parsed.ok) {
-        const assembled = assembleWith(redactModelOutput(parsed.value, this.secretValues()));
+        const assembled = await assembleWith(redactModelOutput(parsed.value, this.secretValues()));
         if (assembled.ok) {
           await this.saveRun(run, { state: 'completed', completedAt: this.now(), sanitizedLog: this.makeLog(log) });
 
@@ -883,6 +911,22 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     return next;
   }
 
+  /** Candidates must cite an existing, inspectable file and line range; others are unverifiable. */
+  private async keepLocatable(
+    findings: readonly ReviewFinding[],
+    ready: ReadyWorkspace,
+  ): Promise<{ kept: ReviewFinding[]; discarded: string[] }> {
+    const kept: ReviewFinding[] = [];
+    const discarded: string[] = [];
+    for (const finding of findings) {
+      const check = await checkFindingLocation(finding, ready.inspector, ready.excludedPaths);
+      if (check.ok) kept.push(finding);
+      else discarded.push(check.issue);
+    }
+
+    return { kept, discarded };
+  }
+
   private promptWorkspace(ready: ReadyWorkspace, warnings: readonly string[]) {
     return {
       checkoutRoot: ready.layout.checkoutRoot,
@@ -944,7 +988,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 }
 
 type VerifierOutputLike = Parameters<typeof assembleVerifiedReport>[0]['output'];
-type VerifiedOutcome = Extract<ReturnType<typeof assembleVerifiedReport>, { ok: true }>;
+type VerifiedOutcome = Extract<Awaited<ReturnType<typeof assembleVerifiedReport>>, { ok: true }>;
 
 function describeCorrection(attempt: number, error: CorrectionNeededError): string {
   return `attempt ${attempt}: ${error.reason}${error.issues.length > 0 ? ` (${error.issues.slice(0, 3).join('; ')})` : ''}`;

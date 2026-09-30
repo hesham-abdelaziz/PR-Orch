@@ -36,6 +36,8 @@ import type {
   StandardsSnapshotForReview,
 } from '../../../apps/api/src/reviews/review-ports.js';
 import { pullRequest, settings as makeSettings, uuid } from './engine-fixtures.js';
+import { InMemoryCheckout, syntheticSource } from './in-memory-checkout.js';
+import type { CheckoutInspectorFactory } from '../../../apps/api/src/reviews/output/checkout-inspector.js';
 
 export const CODEX: ModelSelection = { provider: 'codex', model: 'cli-default' };
 export const GEMINI: ModelSelection = { provider: 'gemini', model: 'pro' };
@@ -59,7 +61,7 @@ export function wireFinding(overrides: Partial<WireFinding> = {}): WireFinding {
     severity: 'high',
     filePath: 'src/loader.ts',
     location: { startLine: 12, endLine: 14, description: null },
-    evidence: 'Line 12 reads config.value without a null check.',
+    evidence: 'Line 12 reads `config.value` without a null check.',
     impact: 'The loader throws for empty configuration.',
     suggestedFix: 'Guard config before reading value.',
     reference: null,
@@ -78,11 +80,16 @@ export type WireDecision = {
   candidateIds: string[];
   verdict: 'accepted' | 'rejected' | 'merged';
   rationale: string;
+  locationCorrection?: string | null;
   finding: WireFinding | null;
 };
 
 export function verifierJson(decisions: WireDecision[], summary = 'Verified the reported claims.', warnings: string[] = []): string {
-  return JSON.stringify({ summary, decisions, warnings });
+  return JSON.stringify({
+    summary,
+    decisions: decisions.map((decision) => ({ ...decision, locationCorrection: decision.locationCorrection ?? null })),
+    warnings,
+  });
 }
 
 export function toWire(candidate: ReviewFinding): WireFinding {
@@ -313,6 +320,8 @@ export interface Harness {
   pullRequests: FakePullRequests;
   providers: FakeProviders;
   probe: ConcurrencyProbe;
+  /** The prepared checkout the engine validates finding locations against. */
+  checkout: InMemoryCheckout;
   scratchRoot: string;
   /** Job states and reviewer events in emission order. */
   log: string[];
@@ -326,6 +335,9 @@ export interface HarnessOptions {
   scripts?: Partial<Record<ProviderId, Script>>;
   /** Exact secret values (e.g. the Azure PAT) the orchestrator must redact. */
   secretValues?: readonly string[];
+  checkout?: InMemoryCheckout;
+  /** Replaces the in-memory checkout, e.g. with the real filesystem inspector. */
+  checkoutInspectors?: CheckoutInspectorFactory;
 }
 
 const neverConfigured: Script = (request) => {
@@ -361,6 +373,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const settings = new FakeSettings();
   const pullRequests = new FakePullRequests();
   const providers = new FakeProviders(adapters);
+  const checkout =
+    options.checkout ??
+    new InMemoryCheckout({
+      'src/loader.ts': syntheticSource(),
+      'src/parser.ts': syntheticSource(),
+      'src/style.ts': syntheticSource(),
+    });
 
   const orchestrator = new ReviewOrchestratorService(
     repository,
@@ -380,6 +399,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       clock,
       scratchRoot,
       idFactory: () => uuid(),
+      checkoutInspectors: options.checkoutInspectors ?? checkout,
       ...(options.secretValues ? { secretValues: () => options.secretValues ?? [] } : {}),
     },
   );
@@ -394,6 +414,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     pullRequests,
     providers,
     probe,
+    checkout,
     scratchRoot,
     log,
     request: (overrides = {}) => ({

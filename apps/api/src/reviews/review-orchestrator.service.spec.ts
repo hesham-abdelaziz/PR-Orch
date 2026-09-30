@@ -25,7 +25,13 @@ import {
 } from '../../../../tests/fixtures/fake-clis/orchestrator-harness.js';
 import { jobRecord, settings as makeSettings } from '../../../../tests/fixtures/fake-clis/engine-fixtures.js';
 import { waitFor } from '../../../../tests/fixtures/fake-clis/scenarios.js';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { syntheticSource } from '../../../../tests/fixtures/fake-clis/in-memory-checkout.js';
 import { InMemoryReviewRepository } from './in-memory-review.repository.js';
+import { FileSystemCheckoutInspectorFactory } from './output/checkout-inspector.js';
 import { ActiveReviewExistsError, ReviewNotFoundError } from './review-errors.js';
 import { toReviewJob } from './review-job.mapper.js';
 
@@ -967,6 +973,8 @@ describe('ReviewOrchestratorService — workspace layout', () => {
       }
       const candidates = await h.repository.listCandidates(id);
       expect(candidates.map((candidate) => candidate.finding.filePath)).toEqual(['src/loader.ts']);
+      // Locations and evidence are validated against the same checkout the providers ran in.
+      expect(new Set(h.checkout.roots)).toEqual(new Set([checkoutPath]));
       expect(record.warnings.join(' ')).toMatch(/discarded 1 finding/u);
     },
   );
@@ -981,6 +989,136 @@ describe('ReviewOrchestratorService — workspace layout', () => {
     expect(record.failureReason).toMatch(/workspace layout/iu);
     expect(h.providers.adapters.codex.calls).toHaveLength(0);
     expect(h.workspace.cleaned).toHaveLength(1);
+  });
+});
+
+describe('ReviewOrchestratorService — verified-finding evidence and location', () => {
+  const unrelated = (candidate: ReviewFinding) => ({
+    ...toWire(candidate),
+    title: 'SQL injection in the style sheet builder',
+    filePath: 'src/style.ts',
+    location: { startLine: 40, endLine: null, description: null },
+    evidence: 'Line 40 concatenates `compute(40)` into a query.',
+  });
+
+  it('never publishes a verified report whose finding was rewritten into an unrelated claim', async () => {
+    const h = await harness({
+      scripts: {
+        codex: (request) => completed('codex', request, reviewerJson()),
+        gemini: (request) => completed('gemini', request, reviewerJson([])),
+        claude: (request) =>
+          completed(
+            'claude',
+            request,
+            verifierJson(
+              candidatesFromPrompt(request.prompt.split('# PREVIOUS OUTPUT')[0] ?? request.prompt).map((candidate) => ({
+                candidateIds: [candidate.id],
+                verdict: 'accepted' as const,
+                rationale: 'Confirmed.',
+                finding: unrelated(candidate),
+              })),
+            ),
+          ),
+      },
+    });
+
+    const { id, record, runs } = await runToEnd(h);
+
+    expect(record.state).toBe('failed');
+    expect(record.failureReason).toMatch(/moves the finding to src\/style\.ts:40, away from its candidates/u);
+    expect(await h.repository.getReport(id)).toBeNull();
+    expect(h.providers.adapters.claude.calls).toHaveLength(2); // one correction attempt, never a third
+    expect(runs.find((run) => run.role === 'verifier')).toMatchObject({ state: 'failed', attempts: 2 });
+    expect(await h.repository.listCandidates(id)).toHaveLength(1);
+  });
+
+  it('uses the single correction attempt to fix a nonexistent file and then completes', async () => {
+    let call = 0;
+    const h = await harness({
+      scripts: {
+        codex: (request) => completed('codex', request, reviewerJson()),
+        gemini: (request) => completed('gemini', request, reviewerJson([])),
+        claude: (request) => {
+          call += 1;
+          const [candidate] = candidatesFromPrompt(request.prompt);
+          if (!candidate) throw new Error('no candidate');
+          const wire = call === 1 ? { ...toWire(candidate), filePath: 'src/imaginary.ts' } : toWire(candidate);
+
+          return completed('claude', request, verifierJson([{ candidateIds: [candidate.id], verdict: 'accepted', rationale: 'Confirmed.', finding: wire }]));
+        },
+      },
+    });
+
+    const { id, record } = await runToEnd(h);
+
+    expect(record.state).toBe('completed');
+    expect(h.providers.adapters.claude.calls[1]?.prompt).toMatch(/src\/imaginary\.ts does not exist in the checkout/u);
+    expect((await h.repository.getReport(id))?.report.findings[0]?.filePath).toBe('src/loader.ts');
+  });
+
+  it('drops reviewer candidates whose file or line range does not exist, and says so', async () => {
+    const h = await harness({
+      scripts: {
+        codex: (request) =>
+          completed(
+            'codex',
+            request,
+            reviewerJson([
+              wireFinding({ title: 'Real finding in the loader' }),
+              wireFinding({ title: 'Finding in an invented file', filePath: 'src/invented.ts' }),
+              wireFinding({ title: 'Finding past the end of the file', location: { startLine: 400, endLine: 410, description: null } }),
+            ]),
+          ),
+        gemini: (request) => completed('gemini', request, reviewerJson([])),
+        claude: verifierAcceptAll,
+      },
+    });
+
+    const { id, record } = await runToEnd(h);
+
+    expect((await h.repository.listCandidates(id)).map((candidate) => candidate.finding.title)).toEqual(['Real finding in the loader']);
+    expect(record.warnings.join(' ')).toMatch(/discarded 2 finding\(s\) whose file or line range does not exist/u);
+    expect(candidatesFromPrompt(h.providers.adapters.claude.calls[0]?.prompt ?? '')).toHaveLength(1);
+  });
+
+  it('validates against the real checkout on disk, refusing links that escape it', async (context) => {
+    const base = await mkdtemp(join(tmpdir(), 'orchestrator-checkout-'));
+    try {
+      const checkoutPath = join(base, 'repo');
+      await mkdir(join(checkoutPath, 'src'), { recursive: true });
+      await mkdir(join(base, 'outside'), { recursive: true });
+      await writeFile(join(checkoutPath, 'src', 'loader.ts'), syntheticSource());
+      await writeFile(join(base, 'outside', 'secret.ts'), syntheticSource());
+      try {
+        await symlink(join(base, 'outside'), join(checkoutPath, 'vendor'), process.platform === 'win32' ? 'junction' : 'dir');
+      } catch {
+        context.skip();
+      }
+      const h = await harness({
+        checkoutInspectors: new FileSystemCheckoutInspectorFactory(),
+        scripts: {
+          codex: (request) =>
+            completed('codex', request, reviewerJson([wireFinding(), wireFinding({ title: 'Escaping finding', filePath: 'vendor/secret.ts' })])),
+          gemini: (request) => completed('gemini', request, reviewerJson([])),
+          claude: verifierAcceptAll,
+        },
+      });
+      h.workspace.paths = {
+        rootPath: base,
+        checkoutPath,
+        diffPath: join(base, 'pr.diff'),
+        metadataPath: join(base, 'pr.json'),
+        technologyManifestPath: join(base, 'tech.json'),
+      };
+
+      const { id, record } = await runToEnd(h);
+
+      expect(record.state).toBe('completed');
+      expect((await h.repository.getReport(id))?.report.findings.map((finding) => finding.filePath)).toEqual(['src/loader.ts']);
+      expect(record.warnings.join(' ')).toMatch(/resolves outside the checkout/u);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
 

@@ -74,7 +74,7 @@ export function finding(overrides: Partial<ReviewFinding> = {}): ReviewFinding {
     severity: 'high',
     filePath: 'src/loader.ts',
     location: { startLine: 12, endLine: 14 },
-    evidence: 'Line 12 reads config.value without a null check.',
+    evidence: 'Line 12 reads `config.value` without a null check.',
     impact: 'The loader throws for empty configuration.',
     suggestedFix: 'Guard config before reading value.',
     origins: [{ provider: 'codex', model: 'cli-default' }],

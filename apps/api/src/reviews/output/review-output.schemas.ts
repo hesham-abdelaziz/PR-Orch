@@ -52,6 +52,12 @@ export const VerifierDecisionOutputSchema = z
     candidateIds: VerifierDecisionSchema.shape.candidateIds,
     verdict: VerifierDecisionSchema.shape.verdict,
     rationale: VerifierDecisionSchema.shape.rationale,
+    /**
+     * Required when an accepted/merged finding moves away from every
+     * referenced candidate's location (another file, or more than a few lines
+     * away): why the candidates' location was wrong. Null otherwise.
+     */
+    locationCorrection: z.string().trim().min(1).max(1_000).nullable(),
     finding: FindingOutputSchema.nullable(),
   })
   .superRefine((decision, context) => {
@@ -62,6 +68,13 @@ export const VerifierDecisionOutputSchema = z
         code: 'custom',
         path: ['finding'],
         message: 'Accepted and merged decisions require a finding',
+      });
+    }
+    if (!requiresFinding && decision.locationCorrection !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['locationCorrection'],
+        message: 'Rejected decisions must set locationCorrection to null',
       });
     }
     if (!requiresFinding && decision.finding !== null) {

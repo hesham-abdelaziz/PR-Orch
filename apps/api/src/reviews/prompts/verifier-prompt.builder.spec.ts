@@ -73,6 +73,15 @@ describe('VerifierPromptBuilder', () => {
     expect(prompt).toMatch(/reject[^.]*cannot (?:be )?(?:verified|supported)/i);
   });
 
+  it('states the objective checks every accepted or merged finding must pass', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toMatch(/evidence must quote at least one exact code excerpt, in backticks, copied from the cited lines/u);
+    expect(prompt).toMatch(/file must exist in the checkout and the line range must exist in that file/u);
+    expect(prompt).toMatch(/explain why in `locationCorrection`/u);
+    expect(prompt).toMatch(/set `locationCorrection` to null/u);
+  });
+
   it('forbids findings without a candidate id and numeric scoring', () => {
     const prompt = builder.build(input());
 

@@ -17,7 +17,7 @@ queued → preparing → reviewing → verifying → rendering → completed
 1. **preparing** – `ReviewWorkspacePort.prepare` (aborts on cancel).
 2. **reviewing** – up to `min(3, settings.maxParallelReviewers)` reviewer processes at once. Each reviewer gets an independent prompt (it never sees other reviewers or their findings). One malformed structured answer gets exactly **one** correction attempt; a second failure fails that reviewer only.
 3. Continue if **at least one** reviewer completed; otherwise the job fails (`All reviewers failed…`). Failed/timed-out reviewers become job warnings (“results are partial”).
-4. **verifying** – the main verifier receives every candidate (stable ids, reviewer origins). `verifier-report.assembler.ts` enforces: each candidate decided **exactly once** (accepted = 1 id, merged ≥ 2 ids, rejected ≥ 1); no unknown/duplicate ids; finding paths stay inside the checkout; finding ids and **origins are derived from the candidates**, never taken from model output. A violation earns the single correction attempt, then the job fails. With zero candidates the verifier is skipped and the report is `clean`.
+4. **verifying** – the main verifier receives every candidate (stable ids, reviewer origins). `verifier-report.assembler.ts` enforces the structural and objective checks described in *Verified-finding checks*. A violation earns the single correction attempt, then the job fails with no report. With zero candidates the verifier is skipped and the report is `clean`.
 5. **rendering** – Markdown is rendered from the validated structured report only (`reports/report-renderer.service.ts`): HTML escaped, unsafe links/images removed, model text cannot forge headings, coverage exclusions and warnings disclosed, rejected claims only in the collapsed audit section.
 6. `completeJob` atomically moves `rendering → completed` and stores the report; if cancellation won the race it is refused and the job ends `cancelled` with no report.
 7. Always: workspace cleanup (failure keeps the job’s state, sets `cleanupPending`, adds a warning, and is retried by `retryPendingCleanups`), scratch schema-file removal, terminal SSE event.
@@ -37,6 +37,25 @@ Overall risk = highest verified severity or `clean`. There are no numeric scores
 | `GET /api/reviews/:reviewId/report.md` | `text/markdown; charset=utf-8`, `attachment`, `nosniff`; 404 unless completed. |
 
 Authentication is the platform’s global guard; nothing here checks sessions.
+
+## Verified-finding checks
+
+Deterministic checks against the immutable prepared checkout (`output/checkout-inspector.ts`, `output/finding-evidence.validator.ts`):
+
+| Check | Reviewer candidates | Accepted / merged findings |
+| --- | --- | --- |
+| Path is a normalized relative path inside the checkout (no traversal, drive, UNC, URL) | dropped | correction |
+| File exists, is a regular file, is not `.git` metadata, not binary, ≤ 1 MiB, not in the workspace's exclusions | dropped (job warning) | correction |
+| Real path (after symbolic links, junctions, reparse points) stays inside the real checkout path | dropped | correction |
+| Cited line range exists in the file | dropped | correction |
+| Evidence quotes ≥ 1 code excerpt in backticks that appears at the cited lines ± 3 (whitespace-normalized; `[REDACTED]` is a gap) | — | correction |
+| Location is in or within 15 lines of a referenced candidate in the same file, or `locationCorrection` explains the move | — | correction |
+| Each candidate decided exactly once; accepted = 1 id, merged ≥ 2; no unknown ids | — | correction |
+| Finding id and origins derived by the engine from the referenced candidates only (the wire schema has no `origins`/`id`) | — | enforced |
+
+Wording and severity may change freely, and duplicates may be merged. Each final finding stores a `verification` audit: the referenced candidates (id, title, severity, location), whether it was relocated and why, the line where the quoted evidence was found, and whether the severity changed.
+
+What these checks do **not** prove: that the claim about the quoted code is correct, that the severity is right, that merged candidates really describe the same defect, or that a relocation's explanation is true. Those remain the main verifier's judgment; the audit makes them reviewable.
 
 ## Redaction of model-authored text
 
@@ -89,7 +108,7 @@ TypeORM is not installed on this branch; records are plain shapes in `entities/`
 - `review_jobs` (`ReviewJobRecord`): `id` PK; `state`; **`event_sequence INTEGER NOT NULL DEFAULT 0`** (only changed by `allocateEventSequence`; never by `updateJob`/`transitionJob` patches); `pull_request` JSON; `main` JSON; `reviewers` JSON; `additional_instructions` NULL; `standards` JSON NULL; `standards_storage_path` NULL; `settings` JSON; `warnings` JSON; `exclusions` JSON; `failure_reason` NULL; `workspace_id` NULL; `cleanup_pending` bool; `overall_risk` NULL; `finding_count` NULL; `created_at`; `updated_at`; `completed_at` NULL. Index `created_at DESC, id DESC` for history paging.
 - `reviewer_runs` (`ReviewerRunRecord`): `id` PK; `job_id` FK; `role` (`reviewer`|`verifier`); `selection` JSON; `state`; `started_at`; `completed_at`; `warning`; `attempts`; `sanitized_log` (≤ 4 KiB, redacted); `result` JSON NULL.
 - `candidate_findings`: **PK (`job_id`, `id`)** — candidate ids are content-derived and repeat across jobs; `run_id` FK; `finding` JSON.
-- `final_findings`: **PK (`job_id`, `id`)**; `finding` JSON; `decision` JSON.
+- `final_findings`: **PK (`job_id`, `id`)**; `finding` JSON; `decision` JSON; **`verification` JSON NOT NULL** (`FindingVerificationAudit`).
 - `reports` (`ReportRecord`): `job_id` PK/FK; `report` JSON; `markdown`; `duration_ms`; `created_at`. Never updated.
 
 Single-active-job guarantee (the database is the authority):

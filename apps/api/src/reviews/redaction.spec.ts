@@ -59,7 +59,7 @@ async function setup(options: HarnessOptions) {
 
 const leakyReviewer = wireFinding({
   title: `Hardcoded key ${S.aws}`,
-  evidence: `Line 12 has ${S.assignment} and ${S.privateKey}`,
+  evidence: `Line 12 reads \`config.value\` next to ${S.assignment} and ${S.privateKey}`,
   impact: `Anyone can reuse ${S.jwt} and ${S.bearer}`,
   suggestedFix: `Rotate ${S.github} and ${S.githubFineGrained}`,
   reference: `See ${S.urlCredential}`,
@@ -99,7 +99,7 @@ describe('redaction of model-authored text before persistence and delivery', () 
             }),
           ),
         gemini: (r) =>
-          completed('gemini', r, reviewerJson([wireFinding({ title: 'Parser leaks the key', filePath: 'src/parser.ts', evidence: `Line 12 logs ${SYNTHETIC_KNOWN_SECRET}` })])),
+          completed('gemini', r, reviewerJson([wireFinding({ title: 'Parser leaks the key', filePath: 'src/parser.ts', evidence: `Line 12 reads \`config.value\` and logs ${SYNTHETIC_KNOWN_SECRET}` })])),
         claude: (r) =>
           completed(
             'claude',

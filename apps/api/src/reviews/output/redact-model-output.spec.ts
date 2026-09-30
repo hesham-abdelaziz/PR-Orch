@@ -37,7 +37,7 @@ describe('redactModelOutput', () => {
     const output = VerifierOutputSchema.parse({
       summary: `Found synthetic-known-value-9 and ${S.jwt}`,
       decisions: [
-        { candidateIds: ['00000000-0000-4000-8000-000000000001'], verdict: 'rejected', rationale: `false alarm, ${S.bearer}`, finding: null },
+        { candidateIds: ['00000000-0000-4000-8000-000000000001'], verdict: 'rejected', rationale: `false alarm, ${S.bearer}`, locationCorrection: null, finding: null },
       ],
       warnings: [`see ${S.urlCredential}`],
     });
