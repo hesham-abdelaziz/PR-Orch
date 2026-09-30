@@ -44,6 +44,7 @@ export class ActiveReviewStore {
   readonly warnings = signal<string[]>([]);
 
   private eventSubscription: Subscription | null = null;
+  private currentRequestId = 0;
 
   readonly isTerminal = computed(() => {
     const s = this.job()?.state;
@@ -129,7 +130,19 @@ export class ActiveReviewStore {
     ];
   });
 
+  reset(): void {
+    this.disconnect();
+    this.job.set(null);
+    this.warnings.set([]);
+    this.error.set(null);
+    this.cancelling.set(false);
+  }
+
   async loadJob(reviewId?: string): Promise<void> {
+    const requestId = ++this.currentRequestId;
+    this.disconnect();
+    this.job.set(null);
+    this.warnings.set([]);
     this.loading.set(true);
     this.error.set(null);
 
@@ -142,7 +155,18 @@ export class ActiveReviewStore {
         schema: ReviewJobSchema.nullable(),
       });
 
+      if (requestId !== this.currentRequestId) {
+        return;
+      }
+
       if (!data) {
+        this.job.set(null);
+        return;
+      }
+
+      // If querying /api/reviews/active without an explicit ID,
+      // completed, failed, or cancelled jobs must not be treated as active.
+      if (!reviewId && ['completed', 'failed', 'cancelled'].includes(data.state)) {
         this.job.set(null);
         return;
       }
@@ -155,9 +179,13 @@ export class ActiveReviewStore {
         this.subscribeToEvents(data.id);
       }
     } catch (err: unknown) {
-      this.error.set(err instanceof Error ? err.message : 'Failed to load review');
+      if (requestId === this.currentRequestId) {
+        this.error.set(err instanceof Error ? err.message : 'Failed to load review');
+      }
     } finally {
-      this.loading.set(false);
+      if (requestId === this.currentRequestId) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -177,10 +205,17 @@ export class ActiveReviewStore {
   }
 
   applyEvent(event: ReviewEvent): void {
+    if (this.job()?.id && event.reviewId !== this.job()?.id) {
+      return;
+    }
+
     switch (event.type) {
       case 'job.snapshot':
         this.job.set(event.payload.job);
         this.warnings.set([...event.payload.job.warnings]);
+        if (['completed', 'failed', 'cancelled'].includes(event.payload.job.state)) {
+          this.disconnect();
+        }
         break;
 
       case 'job.state_changed':
@@ -193,6 +228,7 @@ export class ActiveReviewStore {
         });
         if (['completed', 'failed', 'cancelled'].includes(event.payload.state)) {
           this.cancelling.set(false);
+          this.disconnect();
         }
         break;
 

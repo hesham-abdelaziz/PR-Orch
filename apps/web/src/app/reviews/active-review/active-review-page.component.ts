@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, effect, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { Router, RouterModule } from '@angular/router';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
 import { ActiveReviewStore } from './active-review.store';
 import { PipelineStageListComponent } from './pipeline-stage-list.component';
 import { ReviewerRunCardComponent } from './reviewer-run-card.component';
@@ -412,23 +412,30 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
 export class ActiveReviewPageComponent implements OnInit, OnDestroy {
   readonly store = inject(ActiveReviewStore);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+  private wasActive = false;
 
   constructor() {
-    // When review state transitions to completed, automatically navigate to report
+    // When review state transitions to completed while being actively viewed, automatically navigate to report
     effect(() => {
       const job = this.store.job();
-      if (job && job.state === 'completed') {
+      if (job && job.state === 'completed' && this.wasActive) {
         this.router.navigate([`/reviews/${job.id}`]);
+      } else if (job && !this.store.isTerminal()) {
+        this.wasActive = true;
       }
     });
   }
 
   async ngOnInit(): Promise<void> {
-    await this.store.loadJob();
+    const reviewId = this.route.snapshot.paramMap.get('reviewId') || undefined;
+    await this.store.loadJob(reviewId);
   }
 
   ngOnDestroy(): void {
     this.store.disconnect();
+    this.store.job.set(null);
+    this.wasActive = false;
   }
 
   async onCancel(): Promise<void> {

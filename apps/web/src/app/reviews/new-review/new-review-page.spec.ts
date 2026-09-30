@@ -218,7 +218,7 @@ describe('NewReviewPageComponent', () => {
     expect(startBtn?.disabled).toBe(false);
 
     await component.onStartReview();
-    expect(TestBed.inject(Router).navigate).toHaveBeenCalledWith(['/reviews/active']);
+    expect(TestBed.inject(Router).navigate).toHaveBeenCalledWith(['/reviews', mockCreatedJob.id]);
   });
 
   it('labels line counts as unavailable pre-review when placeholder 0/0 is returned', async () => {
@@ -243,6 +243,6 @@ describe('NewReviewPageComponent', () => {
     const el = fixture.nativeElement as HTMLElement;
     const link = el.querySelector<HTMLAnchorElement>('.dock-error-link');
     expect(link).toBeTruthy();
-    expect(link?.textContent).toContain('View active review');
+    expect(link?.textContent).toContain('Open ongoing review');
   });
 });

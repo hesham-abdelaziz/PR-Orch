@@ -202,7 +202,8 @@ export class NewReviewStore {
         path: '/api/reviews/active',
         schema: ReviewJobSchema.nullable(),
       });
-      this.activeJob.set(job && job.id ? job : null);
+      const isActive = job && job.id && !['completed', 'failed', 'cancelled'].includes(job.state);
+      this.activeJob.set(isActive ? job : null);
     } catch {
       this.activeJob.set(null);
     } finally {

@@ -228,4 +228,18 @@ describe('NewReviewStore', () => {
     expect(store.activeReviewConflictId()).toBe('active-job-xyz');
     expect(store.submitError()).toBe('Another review is already active');
   });
+
+  it('treats failed, cancelled, or completed prior jobs as non-active and allows new review creation', async () => {
+    for (const priorState of ['failed', 'cancelled', 'completed'] as const) {
+      apiClientMock.request.mockImplementation((opts) => {
+        if (opts.path === '/api/reviews/active') {
+          return Promise.resolve({ ...mockCreatedJob, state: priorState });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.checkActiveJob();
+      expect(store.activeJob()).toBeNull();
+    }
+  });
 });

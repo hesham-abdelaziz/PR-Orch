@@ -56,8 +56,8 @@ import { AdditionalInstructionsComponent } from './additional-instructions.compo
               </p>
             </div>
           </div>
-          <a routerLink="/reviews/active" class="btn-primary view-active-btn">
-            View Active Pipeline →
+          <a [routerLink]="['/reviews', store.activeJob()?.id || 'active']" class="btn-primary view-active-btn">
+            Open ongoing review →
           </a>
         </div>
       }
@@ -164,7 +164,7 @@ import { AdditionalInstructionsComponent } from './additional-instructions.compo
               <span>{{ store.submitError() }}</span>
               @if (store.activeReviewConflictId()) {
                 <a [routerLink]="['/reviews', store.activeReviewConflictId()]" class="dock-error-link">
-                  View active review →
+                  Open ongoing review →
                 </a>
               }
             </div>
@@ -440,8 +440,8 @@ export class NewReviewPageComponent implements OnInit {
 
   async onStartReview(): Promise<void> {
     try {
-      await this.store.createReview();
-      await this.router.navigate(['/reviews/active']);
+      const job = await this.store.createReview();
+      await this.router.navigate(['/reviews', job.id]);
     } catch {
       // Error message is set inside store.submitError
     }
