@@ -20,6 +20,7 @@ import { ZodError } from 'zod';
 import { map, type Observable } from 'rxjs';
 
 import { ProviderNotSelectableError } from '../providers/provider-registry.service.js';
+import { redactSecrets } from '../providers/redact-secrets.js';
 import {
   ReportQueryService,
   ReviewHistoryQuerySchema,
@@ -36,7 +37,9 @@ interface HeaderResponse {
 }
 
 function issuesOf(error: ZodError): Array<{ path: string; message: string }> {
-  return error.issues.slice(0, 20).map((issue) => ({ path: issue.path.join('.'), message: issue.message }));
+  return error.issues
+    .slice(0, 20)
+    .map((issue) => ({ path: issue.path.join('.'), message: redactSecrets(issue.message) }));
 }
 
 /**
@@ -61,10 +64,11 @@ export class ReviewsController {
         throw new BadRequestException({ message: 'Invalid review request.', issues: issuesOf(error) });
       }
       if (error instanceof ActiveReviewExistsError) {
-        throw new ConflictException({ message: error.message, activeReviewId: error.activeJobId });
+        throw new ConflictException({ message: redactSecrets(error.message), activeReviewId: error.activeJobId });
       }
       if (error instanceof ProviderNotSelectableError) {
-        throw new UnprocessableEntityException({ message: error.message });
+        // Provider status text can carry CLI diagnostics; never echo credentials.
+        throw new UnprocessableEntityException({ message: redactSecrets(error.message) });
       }
       throw error;
     }

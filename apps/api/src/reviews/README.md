@@ -38,6 +38,14 @@ Overall risk = highest verified severity or `clean`. There are no numeric scores
 
 Authentication is the platform’s global guard; nothing here checks sessions.
 
+## Redaction of model-authored text
+
+- Reviewer and verifier output is redacted **once, at the parse boundary** (`output/redact-model-output.ts`), before normalization. Every string field is covered: titles, evidence, impact, suggested fixes, references, location descriptions, file paths, exclusion reasons, reviewer and verifier warnings, rationales and the executive summary. Everything downstream (candidates, run results, the verifier prompt, stored report JSON, Markdown, job warnings, SSE snapshots, history) is derived from the redacted copy.
+- Failure reasons, run warnings and sanitized logs go through the same policy (`redactSecrets` with known values), and so do HTTP error messages (`409`, `422`, `400` issue text).
+- Policy (`providers/redact-secrets.ts`): exact known secret values plus credential shapes with distinctive structure (private-key blocks, `sk-…`, `AIza…`, `gh*_…`, `github_pat_…`, `AKIA…`, `xox?-…`, digit-bearing `Bearer` tokens, JWTs, 52-char Azure DevOps PATs, `user:password@` in URLs, and quoted literals assigned to secret-named keys). Ordinary identifiers, hashes, template placeholders (`${token}`) and prose such as “Bearer authentication” are left intact.
+- Exact-value redaction uses `ReviewOrchestratorOptions.secretValues` (default: secret-looking environment variables). **The platform should supply the saved Azure PAT here** (via `REVIEW_ORCHESTRATOR_OPTIONS`), since it is not in the environment.
+- A redacted quote no longer matches the source verbatim; evidence anchoring (below) treats `[REDACTED]` as a gap.
+
 ## SSE sequences
 
 - Every event number is allocated from `review_jobs.event_sequence` through `ReviewRepository.allocateEventSequence` (atomic increment-and-return). The value never decreases: not on reconnect, not after the job is terminal, not after a restart.

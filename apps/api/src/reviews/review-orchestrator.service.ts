@@ -24,7 +24,8 @@ import type {
   ProviderRunRequest,
   ProviderRunResult,
 } from '../providers/provider-adapter.js';
-import { boundedSnippet, redactSecrets } from '../providers/redact-secrets.js';
+import { boundedSnippet, collectSecretValues, redactSecrets } from '../providers/redact-secrets.js';
+import { ProviderNotSelectableError } from '../providers/provider-registry.service.js';
 import { ReportRenderer } from '../reports/report-renderer.service.js';
 import type { CandidateFindingRecord } from './entities/candidate-finding.entity.js';
 import type { CoverageExclusion, JobPatch, ReviewJobRecord } from './entities/review-job.entity.js';
@@ -50,6 +51,7 @@ import { REVIEW_REPOSITORY, type ReviewRepository } from './review-repository.js
 import { ReviewLockService } from './review-lock.service.js';
 import { FindingNormalizerService } from './output/finding-normalizer.service.js';
 import { ProviderOutputParser, type CorrectionNeededError } from './output/provider-output.parser.js';
+import { redactModelOutput } from './output/redact-model-output.js';
 import {
   REVIEWER_OUTPUT_JSON_SCHEMA_TEXT,
   VERIFIER_OUTPUT_JSON_SCHEMA_TEXT,
@@ -68,6 +70,11 @@ export interface ReviewOrchestratorOptions {
   idFactory?: () => string;
   /** Directory for per-job scratch files (JSON schemas); defaults to the OS temp dir. */
   scratchRoot?: string;
+  /**
+   * Exact secret values to redact in addition to the credential patterns, e.g.
+   * the saved Azure PAT. Defaults to secret-looking environment variables.
+   */
+  secretValues?: () => readonly string[];
 }
 
 /** The product-wide ceiling on concurrent reviewer processes. */
@@ -102,8 +109,6 @@ interface ReviewerOutcome {
 }
 
 const label = (selection: ModelSelection): string => `${selection.provider}/${selection.model}`;
-const safeText = (value: unknown, max = 300): string =>
-  boundedSnippet(redactSecrets(value instanceof Error ? value.message : String(value)), max);
 
 /**
  * Coordinates one review from creation to a terminal state: prepares the
@@ -118,6 +123,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private readonly clock: () => Date;
   private readonly newId: () => string;
   private readonly scratchRoot: string;
+  private readonly secretValues: () => readonly string[];
 
   constructor(
     @Inject(REVIEW_REPOSITORY) private readonly repository: ReviewRepository,
@@ -138,6 +144,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     this.clock = options.clock ?? (() => new Date());
     this.newId = options.idFactory ?? randomUUID;
     this.scratchRoot = options.scratchRoot ?? tmpdir();
+    this.secretValues = options.secretValues ?? (() => collectSecretValues(process.env));
     this.stateMachine = new JobStateMachine(repository, this.clock);
     this.lock = new ReviewLockService(repository, this.stateMachine);
   }
@@ -162,7 +169,15 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     if (already) throw new ActiveReviewExistsError(already.id);
 
     for (const selection of [request.main, ...request.reviewers]) {
-      await this.providers.assertSelectable(selection);
+      try {
+        await this.providers.assertSelectable(selection);
+      } catch (error) {
+        // Provider status text can carry CLI diagnostics; it reaches HTTP responses.
+        if (error instanceof ProviderNotSelectableError) {
+          throw new ProviderNotSelectableError(redactSecrets(error.message, this.secretValues()));
+        }
+        throw error;
+      }
     }
     const pullRequest = await this.pullRequests.validate(request.pullRequestUrl);
     const settings = await this.settings.get();
@@ -359,7 +374,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       if (ctx.controller.signal.aborted) {
         await this.finishCancelled(ctx);
       } else {
-        await this.fail(ctx, `Workspace preparation failed: ${safeText(error)}`);
+        await this.fail(ctx, `Workspace preparation failed: ${this.safeText(error)}`);
       }
 
       return null;
@@ -390,7 +405,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       layout = resolveWorkspaceLayout(prepared, record.standards ? this.standardsPathOf(record, prepared) : null);
     } catch (error) {
       if (!(error instanceof WorkspaceLayoutError)) throw error;
-      await this.fail(ctx, `The prepared workspace layout is invalid: ${safeText(error)}`);
+      await this.fail(ctx, `The prepared workspace layout is invalid: ${this.safeText(error)}`);
 
       return null;
     }
@@ -412,7 +427,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       try {
         return await this.runReviewer(ctx, record, ready, run);
       } catch (error) {
-        return this.reviewerFailure(run, `Reviewer failed unexpectedly: ${safeText(error)}`, 'failed');
+        return this.reviewerFailure(run, `Reviewer failed unexpectedly: ${this.safeText(error)}`, 'failed');
       }
     });
   }
@@ -473,14 +488,16 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         const { result: normalized, dropped } = this.normalizer.normalizeReviewer({
           reviewer: selection,
           workspaceRoot: checkout,
-          output: parsed.value,
+          // Redacted once here, so candidates, run results, the verifier prompt,
+          // reports, logs and events only ever see redacted model text.
+          output: redactModelOutput(parsed.value, this.secretValues()),
         });
         const warnings: string[] = [];
         if (dropped.length > 0) {
           warnings.push(`Reviewer ${tag} discarded ${dropped.length} finding(s) or exclusion(s) with invalid paths or fields.`);
         }
         for (const warning of normalized.warnings.slice(0, MAX_REVIEWER_WARNINGS)) {
-          warnings.push(`Reviewer ${tag}: ${safeText(warning)}`);
+          warnings.push(`Reviewer ${tag}: ${this.safeText(warning)}`);
         }
 
         return {
@@ -539,7 +556,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         log,
       );
     }
-    const message = safeText(result.failure.message, 500) || 'The provider failed.';
+    const message = this.safeText(result.failure.message, 500) || 'The provider failed.';
 
     return this.reviewerFailure(run, message, 'failed', `Reviewer ${tag} failed: ${message}; results are partial.`, log);
   }
@@ -650,7 +667,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         return null;
       }
       if (result.status === 'failed') {
-        const message = safeText(result.failure.message, 500) || 'The provider failed.';
+        const message = this.safeText(result.failure.message, 500) || 'The provider failed.';
         await this.saveRun(run, { state: 'failed', completedAt: this.now(), warning: message, sanitizedLog: this.makeLog(log) });
         await this.fail(ctx, `Main verifier ${tag} failed: ${message}`);
 
@@ -661,7 +678,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const parsed = this.parser.parseVerifier({ provider: selection.provider, rawOutput: result.rawOutput });
       let issues: string[];
       if (parsed.ok) {
-        const assembled = assembleWith(parsed.value);
+        const assembled = assembleWith(redactModelOutput(parsed.value, this.secretValues()));
         if (assembled.ok) {
           await this.saveRun(run, { state: 'completed', completedAt: this.now(), sanitizedLog: this.makeLog(log) });
 
@@ -688,7 +705,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     });
     await this.fail(
       ctx,
-      `Main verifier ${tag} did not return a valid, complete verification after one correction attempt (${safeText(lastIssue, 200)}).`,
+      `Main verifier ${tag} did not return a valid, complete verification after one correction attempt (${this.safeText(lastIssue, 200)}).`,
     );
 
     return null;
@@ -752,7 +769,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async fail(ctx: Runtime, reason: string): Promise<void> {
     await this.settleUnfinishedRuns(ctx.jobId, 'Not run because the review failed.');
     const result = await this.stateMachine.transition(ctx.jobId, 'failed', {
-      failureReason: safeText(reason, 1_000),
+      failureReason: this.safeText(reason, 1_000),
       warnings: ctx.warnings,
     });
     if (result.applied) this.events.jobStateChanged(ctx.jobId, 'failed');
@@ -761,7 +778,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
   private async failUnexpected(ctx: Runtime, error: unknown): Promise<void> {
     try {
-      await this.fail(ctx, `Internal error while running the review: ${safeText(error)}`);
+      await this.fail(ctx, `Internal error while running the review: ${this.safeText(error)}`);
     } catch {
       // Nothing more can be done; startup recovery fails any job left active.
     }
@@ -789,7 +806,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       await this.repository.updateJob(jobId, { cleanupPending: false }, this.now());
     } catch (error) {
       const job = await this.repository.getJob(jobId);
-      const warning = `Workspace cleanup failed and will be retried: ${safeText(error, 200)}`;
+      const warning = `Workspace cleanup failed and will be retried: ${this.safeText(error, 200)}`;
       const warnings = job && !job.warnings.some((known) => known.startsWith('Workspace cleanup failed'))
         ? [...job.warnings, warning]
         : (job?.warnings ?? []);
@@ -818,7 +835,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         runId: request.runId,
         durationMs: 0,
         status: 'failed',
-        failure: { kind: 'process', message: safeText(error, 300) },
+        failure: { kind: 'process', message: this.safeText(error, 300) },
       };
     } finally {
       ctx.activeRuns.delete(request.runId);
@@ -898,7 +915,14 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   }
 
   private makeLog(lines: readonly string[]): string {
-    return redactSecrets(lines.join('\n')).slice(0, MAX_LOG_CHARACTERS);
+    return redactSecrets(lines.join('\n'), this.secretValues()).slice(0, MAX_LOG_CHARACTERS);
+  }
+
+  /** Redacted, single-line, bounded text for warnings, failure reasons and logs. */
+  private safeText(value: unknown, max = 300): string {
+    const text = value instanceof Error ? value.message : String(value);
+
+    return boundedSnippet(redactSecrets(text, this.secretValues()), max);
   }
 
   private now(): string {

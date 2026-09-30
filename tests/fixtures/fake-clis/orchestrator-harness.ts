@@ -287,12 +287,14 @@ export class FakePullRequests implements PullRequestValidationPort {
 
 export class FakeProviders implements ReviewProviderPort {
   readonly blocked = new Set<string>();
+  /** Message of the not-selectable error; defaults to "<provider> is not ready.". */
+  blockedMessage: string | null = null;
 
   constructor(readonly adapters: Record<ProviderId, ScriptedAdapter>) {}
 
   assertSelectable(selection: ModelSelection): Promise<void> {
     return this.blocked.has(`${selection.provider}/${selection.model}`)
-      ? Promise.reject(new ProviderNotSelectableError(`${selection.provider} is not ready.`))
+      ? Promise.reject(new ProviderNotSelectableError(this.blockedMessage ?? `${selection.provider} is not ready.`))
       : Promise.resolve();
   }
 
@@ -322,6 +324,8 @@ export interface Harness {
 export interface HarnessOptions {
   repository?: InMemoryReviewRepository;
   scripts?: Partial<Record<ProviderId, Script>>;
+  /** Exact secret values (e.g. the Azure PAT) the orchestrator must redact. */
+  secretValues?: readonly string[];
 }
 
 const neverConfigured: Script = (request) => {
@@ -372,7 +376,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     new ReviewerPromptBuilder(),
     new VerifierPromptBuilder(),
     new CorrectionPromptBuilder(),
-    { clock, scratchRoot, idFactory: () => uuid() },
+    {
+      clock,
+      scratchRoot,
+      idFactory: () => uuid(),
+      ...(options.secretValues ? { secretValues: () => options.secretValues ?? [] } : {}),
+    },
   );
 
   return {
