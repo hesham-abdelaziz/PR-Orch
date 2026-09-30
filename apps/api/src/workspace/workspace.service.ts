@@ -5,10 +5,11 @@ import type { PrepareWorkspaceInput, PreparedWorkspace } from '../reviews/review
 import type { SecretValuesService } from '../secrets/secret-store.js';
 import { repositoryUrl, parseAzurePrUrl } from '../azure-devops/azure-pr-url.parser.js';
 import { GitProcessService } from './git-process.service.js';
+import { AzureDevOpsService, type GitCredential } from '../azure-devops/azure-devops.service.js';
 
 export class WorkspaceService {
   private readonly git: GitProcessService;
-  constructor(private readonly root: string, gitExecutable: string, private readonly secrets: SecretValuesService, private readonly remote: (pr: PullRequestSummary) => string = repositoryUrl, private readonly getSettings: () => Promise<Settings> = async () => ({ ...structuredClone(DEFAULT_SETTINGS), excludedGlobs: [...DEFAULT_SETTINGS.excludedGlobs], defaultReviewers: [], workspaceRoot: root })) {
+  constructor(private readonly root: string, gitExecutable: string, private readonly secrets: SecretValuesService, private readonly remote: (pr: PullRequestSummary) => string = repositoryUrl, private readonly getSettings: () => Promise<Settings> = async () => ({ ...structuredClone(DEFAULT_SETTINGS), excludedGlobs: [...DEFAULT_SETTINGS.excludedGlobs], defaultReviewers: [], workspaceRoot: root }), private readonly getCredential: () => Promise<GitCredential> = () => new AzureDevOpsService(secrets).getGitCredential()) {
     if (!isAbsolute(root)) throw new Error('Workspace root must be absolute');
     this.git = new GitProcessService(gitExecutable, () => secrets.values());
   }
@@ -19,13 +20,12 @@ export class WorkspaceService {
     await mkdir(this.root, { recursive: true });
     const rootPath = await mkdtemp(join(this.root, 'job-')); const workspaceId = basename(rootPath); const checkoutPath = join(rootPath, 'checkout');
     try {
-      await mkdir(checkoutPath); const run = (args: string[], credential?: string, maxBytes?: number) => this.git.run(args, checkoutPath, signal, credential, maxBytes);
+      await mkdir(checkoutPath); const run = (args: string[], credential?: GitCredential, maxBytes?: number) => this.git.run(args, checkoutPath, signal, credential, maxBytes);
       const remote = this.remote(pr);
       await run(['init']);
       await run(['remote', 'add', 'origin', remote]); await run(['remote', 'set-url', '--push', 'origin', 'DISABLED']);
-      const credential = await this.secrets.getPat();
+      const credential = remote.startsWith('https:') ? await this.getCredential() : undefined;
       // A file-based test fixture needs no auth; production URLs are canonical Azure HTTPS.
-      if (remote.startsWith('https:') && !credential) throw new Error('PAT is not configured; Azure CLI Git credential integration is required');
       await run(['fetch', '--no-tags', '--depth=1', 'origin', pr.sourceCommit], credential ?? undefined);
       await run(['fetch', '--no-tags', '--depth=1', 'origin', pr.targetCommit], credential ?? undefined);
       await run(['-c', 'core.autocrlf=false', 'checkout', '--detach', pr.sourceCommit]);

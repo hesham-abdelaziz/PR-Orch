@@ -27,10 +27,11 @@ export class SecretValuesService {
     if (!this.known.has(value) && this.known.size >= 128) throw new Error('Restart the dashboard before further credential rotations');
     this.known.add(value);
   }
+  rememberCredential(value: string) { this.remember(value); }
   async setPat(value: string) {
     if (!value.trim() || value.length > 2560) throw new Error('Invalid PAT');
     await this.getPat(); this.remember(value); await this.store.set('azure-devops-pat', value);
   }
   async deletePat() { await this.getPat(); await this.store.delete('azure-devops-pat'); }
-  values(): readonly string[] { return [...this.known, ...collectSecretValues(process.env)]; }
+  values(): readonly string[] { return [...this.known].flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString('base64'), Buffer.from(':' + value).toString('base64')]).concat(collectSecretValues(process.env)); }
 }

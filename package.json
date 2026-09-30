@@ -10,6 +10,7 @@
     "node": ">=24.15"
   },
   "scripts": {
+    "start": "npm --workspace @pr-orchestrator/api run start:prod",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:contracts": "npm --workspace @pr-orchestrator/contracts run test",

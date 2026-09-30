@@ -1,10 +1,19 @@
-import { Module } from '@nestjs/common';
-import { AppController } from './app.controller.js';
-import { AppService } from './app.service.js';
+import { Module, type DynamicModule } from '@nestjs/common';
+import {
+  PlatformModule,
+  type PlatformOptions,
+} from './platform/platform.module.js';
+import { ReviewsModule } from './reviews/reviews.module.js';
+import { ReportsModule } from './reports/reports.module.js';
+import { ReportReadController } from './platform/report-read.controller.js';
 
-@Module({
-  imports: [],
-  controllers: [AppController],
-  providers: [AppService],
-})
-export class AppModule {}
+@Module({})
+export class AppModule {
+  static forRoot(options: PlatformOptions): DynamicModule {
+    return {
+      module: AppModule,
+      imports: [PlatformModule.forRoot(options), ReviewsModule, ReportsModule],
+      controllers: [ReportReadController],
+    };
+  }
+}

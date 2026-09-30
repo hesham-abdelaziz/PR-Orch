@@ -5,7 +5,7 @@ Branch: `feat/pr-orchestrator-integration`
 Worktree: `C:/Users/EGDev06/.codex/worktrees/platform-integration/x20`
 Platform migration commit: `f96263c`; platform bindings: `3e1ed79`. Initial engine merge: `366155e`. Current engine head: `331a34c`, merged as `87b3931`.
 
-Latest verification: [Windows engine-fix gate](windows-engine-verification.md). Both earlier Windows blockers are resolved; the native Windows full suite and smoke now pass. Historical results below are retained for traceability.
+Latest platform state: [runnable backend verification](backend-verification.md) and [Gemini API handoff](frontend-api-handoff.md). The production Azure client, local startup and dashboard HTTP endpoints described as remaining below have now been implemented. The UI merge/browser gate and live Azure/sandbox verification remain pending. Earlier engine verification: [Windows engine-fix gate](windows-engine-verification.md). Historical results below are retained for traceability.
 
 ## Implemented
 

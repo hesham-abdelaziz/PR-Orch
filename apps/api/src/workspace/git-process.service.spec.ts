@@ -5,6 +5,16 @@ import { join } from 'node:path';
 
 const gitPath = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git';
 describe('Git process lifetime', () => {
+  it('injects bearer credentials through process environment without persisted config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'git-auth-'));
+    const service = new GitProcessService(gitPath, () => []);
+    try {
+      const output = await service.run(['config', '--get', 'http.extraHeader'], root, new AbortController().signal, { value: 'synthetic-cli-token', scheme: 'Bearer' });
+      expect(output.trim()).toBe('Authorization: Bearer synthetic-cli-token');
+      expect((await service.run(['config', '--get', 'http.followRedirects'], root, new AbortController().signal)).trim()).toBe('false');
+      await expect(service.run(['config', '--get', 'http.extraHeader'], root, new AbortController().signal)).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it.each(['output', 'timeout', 'abort'] as const)('kills a real descendant on %s before returning', async reason => {
     const root = await mkdtemp(join(tmpdir(), 'git-tree-'));
     const pidPath = join(root, 'child.pid').replaceAll('\\', '/');
