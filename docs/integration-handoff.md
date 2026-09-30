@@ -3,7 +3,9 @@
 Date: 2026-09-30 (Africa/Cairo)
 Branch: `feat/pr-orchestrator-integration`
 Worktree: `C:/Users/EGDev06/.codex/worktrees/platform-integration/x20`
-Platform migration commit: `f96263c`. Corrected engine head: `cc94abf`; integration merge: `366155e`.
+Platform migration commit: `f96263c`; platform bindings: `3e1ed79`. Initial engine merge: `366155e`. Current engine head: `331a34c`, merged as `87b3931`.
+
+Latest verification: [Windows engine-fix gate](windows-engine-verification.md). Both earlier Windows blockers are resolved; the native Windows full suite and smoke now pass. Historical results below are retained for traceability.
 
 ## Implemented
 
@@ -22,25 +24,25 @@ Platform migration commit: `f96263c`. Corrected engine head: `cc94abf`; integrat
 This is a tested platform/engine binding, not the completed runnable dashboard.
 PlatformModule currently requires the real Azure PR-validation callback; tests use a fake Azure response. Production Azure REST/CLI clients, full dashboard HTTP controllers, AppModule startup wiring and browser Playwright tests remain outstanding. HTTPS Git fetch currently requires a PAT; Azure CLI fallback is not implemented and fails explicitly. The configurable workspace root is confined to application data for this MVP. UI corrections and its report-response contract remain pending; UI has not been merged.
 
-## Engine-owner requirements
+## Earlier engine-owner requirements (resolved)
 
-1. Installed Claude 2.1.280 uses an npm .cmd wrapper launching `%dp0%/node_modules/@anthropic-ai/claude-code/bin/claude.exe`. WindowsCliResolver only accepts JavaScript shim targets and therefore fails to detect Claude. Support trusted native npm launch targets with absolute containment validation and shell:false; use the real shim shape in regression tests.
-2. `discoverConfiguredModels > reads the default model each CLI is configured with` fails on Windows: injected fake filesystem keys are POSIX while native joining produces Windows paths. Match the test path flavor to its platform and retain Windows config-path coverage.
+1. Claude native npm launch target discovery: fixed in `e26c285`, imported unchanged and verified against the installed executable on Windows.
+2. Windows configured-model fake path mismatch: fixed in `331a34c`; host-native, explicit Windows and explicit POSIX tests all pass on Windows.
 3. Gemini sandbox mounts for include-directories and Codex sandbox reads outside --cd remain unproven. Help accepting a flag does not prove filesystem access. No paid model invocation was run.
 
 ## Windows smoke
 
 - Node v24.18.0; better-sqlite3 12.11.1 bundles SQLite 3.53.2 (RETURNING supported).
-- Claude 2.1.280: authenticated; help lists restricted, permission-prompts, add-dir and json-schema. Diagnostic native invocation succeeds; engine detection fails.
+- Claude 2.1.280: authenticated; help lists restricted, permission-prompts, add-dir and json-schema. Engine detection and actual adapter support check now pass. The returned native path is canonicalized through the Node/NVM junction.
 - Codex 0.159.2: authenticated using ChatGPT; resolver prefers native exe; required flags appear in exec help.
 - Installed Codex exec help describes --add-dir as directories writable alongside the primary workspace. The integration test confirms it is not sent for review context.
 - Gemini 0.60.0: resolver uses Node plus bundle/gemini.js; required flags appear in help; authentication unknown_until_run.
 - Disposable namespaced Windows Credential Manager write/read/delete passed. No existing credential overwritten.
 - Windows process-tree tests passed. Directory-junction inspector case ran; three file-symlink cases skipped for missing privileges.
 - No leftover fixture node.exe processes were found after the engine run.
-- Smoke script exits 1 while the engine cannot detect installed Claude. It prints only paths/statuses, never secrets.
+- Smoke script now exits 0 with all three providers detected. It prints only paths/statuses, never secrets.
 
-## Verification
+## Earlier checkpoint verification (superseded by the latest gate)
 
 All checks below ran on Windows with synthetic secrets and fake provider output; no Azure or paid model calls. Commands without an alternate directory run from the integration worktree above.
 
@@ -64,7 +66,7 @@ The independent reviewer confirmed the original platform defects using real SQLi
 
 ## Next integration steps
 
-1. Engine owner fixes Claude native shim discovery and the Windows model-catalog test without weakening read-only settings. Rerun Windows smoke and the full suite.
+1. Done: engine fixes merged unchanged; Windows smoke and the full suite pass. See the latest verification report.
 2. Platform owner supplies real read-only Azure validation/authentication, dashboard controllers and local-only startup wiring. Verify real authentication without paid review calls or Azure writes.
 3. Merge the corrected Gemini UI after platform and engine, then run browser tests for login, settings/standards replacement, review creation, cancellation, SSE reconnect and sanitized Markdown reports.
 4. Explicitly authorize a separate live-provider sandbox-access check if desired; the non-billable checks cannot prove access outside the checkout.
