@@ -1,3 +1,5 @@
+import { join, posix, win32 } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -64,28 +66,75 @@ describe('buildModelCatalog', () => {
 });
 
 describe('discoverConfiguredModels', () => {
-  const files: Record<string, string> = {
-    '/home/u/.codex/config.toml': 'model = "gpt-local"\napproval_policy = "never"\n[profiles.x]\nmodel = "ignored"\n',
-    '/home/u/.gemini/settings.json': '{"model":{"name":"gemini-local"}}',
-    '/home/u/.claude/settings.json': '{"model":"opus"}',
+  const CONFIG = {
+    codex: 'model = "gpt-local"\napproval_policy = "never"\n[profiles.x]\nmodel = "ignored"\n',
+    gemini: '{"model":{"name":"gemini-local"}}',
+    claude: '{"model":"opus"}',
   };
-  const fileSystem = { readText: (path: string) => files[path] };
+
+  // Builds the fake filesystem with the same path API the code under test uses,
+  // so keys match on every OS. Lookups are exact: a wrong separator, home
+  // directory or file name finds nothing.
+  function configFiles(pathApi: { join(...parts: string[]): string }, home: string) {
+    const files = new Map<string, string>([
+      [pathApi.join(home, '.codex', 'config.toml'), CONFIG.codex],
+      [pathApi.join(home, '.gemini', 'settings.json'), CONFIG.gemini],
+      [pathApi.join(home, '.claude', 'settings.json'), CONFIG.claude],
+    ]);
+    const requested: string[] = [];
+
+    return {
+      requested,
+      fileSystem: {
+        readText: (path: string) => {
+          requested.push(path);
+
+          return files.get(path);
+        },
+      },
+    };
+  }
+
+  function expectEveryConfiguredModel(input: Parameters<typeof discoverConfiguredModels>[1]) {
+    expect(discoverConfiguredModels('codex', input)).toEqual(['gpt-local']);
+    expect(discoverConfiguredModels('gemini', input)).toEqual(['gemini-local']);
+    expect(discoverConfiguredModels('claude', input)).toEqual(['opus']);
+  }
 
   it('reads the default model each CLI is configured with', () => {
-    expect(discoverConfiguredModels('codex', { homeDirectory: '/home/u', fileSystem })).toEqual([
-      'gpt-local',
+    const home = join('/', 'home', 'u');
+    const { fileSystem } = configFiles({ join }, home);
+
+    expectEveryConfiguredModel({ homeDirectory: home, fileSystem });
+  });
+
+  it('reads each CLI config from the Windows profile directory', () => {
+    const { fileSystem, requested } = configFiles(win32, 'C:\\Users\\Dev');
+
+    expectEveryConfiguredModel({ homeDirectory: 'C:\\Users\\Dev', fileSystem, pathApi: win32 });
+    expect(requested).toEqual([
+      'C:\\Users\\Dev\\.codex\\config.toml',
+      'C:\\Users\\Dev\\.gemini\\settings.json',
+      'C:\\Users\\Dev\\.claude\\settings.json',
     ]);
-    expect(discoverConfiguredModels('gemini', { homeDirectory: '/home/u', fileSystem })).toEqual([
-      'gemini-local',
-    ]);
-    expect(discoverConfiguredModels('claude', { homeDirectory: '/home/u', fileSystem })).toEqual([
-      'opus',
+  });
+
+  it('reads each CLI config from a POSIX home directory', () => {
+    const { fileSystem, requested } = configFiles(posix, '/home/u');
+
+    expectEveryConfiguredModel({ homeDirectory: '/home/u', fileSystem, pathApi: posix });
+    expect(requested).toEqual([
+      '/home/u/.codex/config.toml',
+      '/home/u/.gemini/settings.json',
+      '/home/u/.claude/settings.json',
     ]);
   });
 
   it('ignores missing, malformed, or unsafe configuration', () => {
+    const { fileSystem } = configFiles({ join }, join('/', 'home', 'u'));
+
     expect(
-      discoverConfiguredModels('gemini', { homeDirectory: '/nowhere', fileSystem }),
+      discoverConfiguredModels('gemini', { homeDirectory: join('/', 'nowhere'), fileSystem }),
     ).toEqual([]);
     expect(
       discoverConfiguredModels('gemini', {
