@@ -12,13 +12,37 @@ tight process supervision. Owned by the engine stream; consumed by
 | `process/process-tree-killer.ts` | Idempotent tree termination: POSIX process group, Windows `taskkill /PID <pid> /T` then `/F` after a grace period. The runner is injectable for tests. |
 | `process/environment-policy.ts` | Deny-by-default child environment: a small system allowlist plus a per-provider auth allowlist. Names containing `AZURE`, `PASSWORD`, `SECRET`, `SESSION`, a `PAT` segment or `PR_ORCHESTRATOR*` are never passed. `TOKEN`-like names pass only when allow-listed for that provider. |
 | `process/output-buffer.ts` | Byte-capped, UTF-8-boundary-safe buffer; strips ANSI and control characters. |
-| `windows-cli-resolver.ts` | Finds `claude`, `codex`, `gemini` on `PATH` only (absolute directories, `.exe`/`.cmd`). npm `.cmd` shims are resolved to `node` + the JS entry point so no shell is needed. Codex prefers its native `.exe`. |
+| `windows-cli-resolver.ts` | Finds `claude`, `codex`, `gemini` on `PATH` only (absolute directories, `.exe`/`.cmd`). npm `.cmd` shims are parsed, never run: a JavaScript target becomes `node` + the entry point; a native `.exe` target (Claude Code's npm package) is run directly under the containment rule below. Codex prefers a native `.exe`. |
 | `adapters/adapter-command-policy.ts` | Builds each provider's argument vector and asserts the policy (below) before every spawn. |
 | `adapters/{claude,codex,gemini}.adapter.ts` | Installation/version detection, authentication probe, model catalog, `runReview`, `cancel`. |
 | `model-catalog.service.ts` | `maintained` aliases, `configured` models discovered from each CLI's own config, and `dynamic` (`cli-default`). |
 | `provider-registry.service.ts` | Cached statuses (TTL + coalesced refresh) behind a `ProviderSnapshotStore` port; `assertSelectable`. |
 | `providers.controller.ts` | `GET /api/providers`, `POST /api/providers/refresh` (full `api/` prefix in the decorator). |
 | `redact-secrets.ts` | Redaction of known secret values and common credential shapes; bounded snippets. |
+
+## Windows npm shim resolution
+
+`.cmd` wrappers are read as text and never executed through `cmd.exe`. The
+last `"%dp0%\<relative target>" %*` launch line decides the target:
+
+- **JavaScript** (`.js`, `.cjs`, `.mjs`): must lie inside the shim directory
+  (no `.`/`..` segments) and exist; runs as `<current node.exe> <entry> …`.
+- **Native** (`.exe`), e.g. Claude Code 2.1.280's
+  `"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*`:
+  runs as the executable itself with no Node prefix, and only when all hold:
+  - the relative target has no empty, `.`, `..` or `:`-bearing segment
+    (rejects traversal, UNC, drive-qualified and alternate-data-stream forms);
+  - it names `node_modules\<package>\…` or `node_modules\@scope\<package>\…`
+    with at least one segment below the package directory;
+  - neither the shim directory nor the target's real path is a UNC path;
+  - after resolving every junction and link, the target's real path starts
+    with `<real shim dir>\node_modules\<package>\` (case-insensitive);
+    a package directory or file linked elsewhere is refused;
+  - the real path is an existing regular file.
+  The returned `executablePath` is that real path.
+
+Anything else (other extensions, absolute targets, a missing file) makes the
+shim unresolvable, so the provider reports as not installed.
 
 ## Command profiles
 
@@ -58,6 +82,11 @@ redacted, bounded `message`. Diagnostics never include the prompt or a full
 transcript.
 
 ## Tests and fakes
+
+`tests/fixtures/fake-clis/windows-npm-shims.ts` holds synthetic copies of the
+npm `.cmd` wrapper shapes. Real-filesystem resolver tests (regular file,
+directory, junction, file symlink) run only on Windows; the file-symlink case
+skips when the process lacks the Windows symlink privilege.
 
 `tests/fixtures/fake-clis/` holds deterministic fake CLIs (`fake-cli.mjs` for
 supervisor scenarios, `fake-provider.mjs` for adapter contract tests) and the

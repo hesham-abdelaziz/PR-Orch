@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import * as nativePath from 'node:path';
 
 import type { ModelCatalog, ProviderId } from '@pr-orchestrator/contracts';
 
@@ -66,10 +66,17 @@ export interface ConfigReader {
   readText(path: string): string | undefined;
 }
 
+export interface ConfiguredModelsInput {
+  homeDirectory: string;
+  fileSystem: ConfigReader;
+  /** Path API used to build config paths; defaults to the host platform's. */
+  pathApi?: Pick<typeof nativePath, 'join'>;
+}
+
 /** Reads the default model each CLI is already configured with; never executes anything. */
 export function discoverConfiguredModels(
   provider: ProviderId,
-  input: { homeDirectory: string; fileSystem: ConfigReader },
+  input: ConfiguredModelsInput,
 ): string[] {
   const models = readConfiguredModel(provider, input);
 
@@ -78,8 +85,9 @@ export function discoverConfiguredModels(
 
 function readConfiguredModel(
   provider: ProviderId,
-  input: { homeDirectory: string; fileSystem: ConfigReader },
+  input: ConfiguredModelsInput,
 ): string[] {
+  const { join } = input.pathApi ?? nativePath;
   try {
     switch (provider) {
       case 'codex': {
