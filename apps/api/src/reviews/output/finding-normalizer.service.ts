@@ -26,6 +26,19 @@ export interface NormalizeReviewerInput {
   output: ReviewerOutput;
 }
 
+export interface NormalizeVerifiedFindingInput {
+  /** Engine-assigned identity: the candidate id, or a stable id for a merge. */
+  id: string;
+  /** Derived by the engine from the decided candidates; never taken from model output. */
+  origins: ModelSelection[];
+  output: FindingOutput;
+  workspaceRoot: string;
+}
+
+export type NormalizedVerifiedFinding =
+  | { ok: true; finding: ReviewFinding }
+  | { ok: false; reason: PathRejection | 'invalid_finding' };
+
 export interface NormalizedReviewer {
   result: ReviewerResult;
   dropped: DroppedFinding[];
@@ -105,13 +118,27 @@ export class FindingNormalizerService {
     return { result, dropped };
   }
 
+  /** Validates the verifier's canonical finding; identity and origins are engine-owned. */
+  normalizeVerifiedFinding(input: NormalizeVerifiedFindingInput): NormalizedVerifiedFinding {
+    const path = validateFindingPath(input.output.filePath, input.workspaceRoot);
+    if (!path.ok) return { ok: false, reason: path.reason };
+
+    const finding = this.toFinding(input.origins[0] as ModelSelection, input.output, path.path, {
+      id: input.id,
+      origins: input.origins,
+    });
+
+    return finding === undefined ? { ok: false, reason: 'invalid_finding' } : { ok: true, finding };
+  }
+
   private toFinding(
     reviewer: ModelSelection,
     raw: FindingOutput,
     filePath: string,
+    identity?: { id: string; origins: ModelSelection[] },
   ): ReviewFinding | undefined {
     const parsed = ReviewFindingSchema.safeParse({
-      id: candidateId(reviewer, filePath, raw.location, raw.title),
+      id: identity?.id ?? candidateId(reviewer, filePath, raw.location, raw.title),
       title: raw.title,
       severity: raw.severity,
       filePath,
@@ -124,7 +151,7 @@ export class FindingNormalizerService {
       impact: raw.impact,
       suggestedFix: raw.suggestedFix,
       ...(raw.reference === null ? {} : { reference: raw.reference }),
-      origins: [reviewer],
+      origins: identity?.origins ?? [reviewer],
     });
 
     return parsed.success ? parsed.data : undefined;

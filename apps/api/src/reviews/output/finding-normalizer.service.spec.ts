@@ -167,4 +167,46 @@ describe('FindingNormalizerService', () => {
     expect(result.exclusions).toEqual([{ path: 'dist/bundle.js', reason: 'Generated' }]);
     expect(dropped).toEqual([{ title: '../outside', reason: 'traversal' }]);
   });
+
+  describe('normalizeVerifiedFinding', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+
+    it('builds a contract-valid finding with the given id and origins, never model-supplied ones', () => {
+      const outcome = service.normalizeVerifiedFinding({
+        id,
+        origins: [claude, codex],
+        output: finding({ filePath: 'C:\\work\\job-1\\checkout\\src\\loader.ts' }),
+        workspaceRoot: ROOT,
+      });
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.finding).toMatchObject({ id, filePath: 'src/loader.ts', origins: [claude, codex] });
+      expect(outcome.finding.location).toEqual({ startLine: 12, endLine: 14 });
+    });
+
+    it('rejects traversal and outside-checkout paths instead of repairing them', () => {
+      for (const filePath of ['../secret.ts', 'C:\\Windows\\system.ini', 'src/../../x.ts']) {
+        const outcome = service.normalizeVerifiedFinding({
+          id,
+          origins: [claude],
+          output: finding({ filePath }),
+          workspaceRoot: ROOT,
+        });
+
+        expect(outcome.ok, filePath).toBe(false);
+      }
+    });
+
+    it('rejects a range that ends before it starts', () => {
+      const outcome = service.normalizeVerifiedFinding({
+        id,
+        origins: [claude],
+        output: finding({ location: { startLine: 20, endLine: 10, description: null } }),
+        workspaceRoot: ROOT,
+      });
+
+      expect(outcome).toEqual({ ok: false, reason: 'invalid_finding' });
+    });
+  });
 });
