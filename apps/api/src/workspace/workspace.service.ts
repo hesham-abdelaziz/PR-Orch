@@ -16,7 +16,6 @@ export class WorkspaceService {
   async prepare(input: PrepareWorkspaceInput, signal: AbortSignal): Promise<PreparedWorkspace> {
     const pr = PullRequestSummarySchema.parse(input.pullRequest); parseAzurePrUrl(pr.url);
     const settings = await this.getSettings();
-    if (pr.changedFiles > settings.limits.hardChangedFiles) throw new Error('PR exceeds changed-file hard limit');
     await mkdir(this.root, { recursive: true });
     const rootPath = await mkdtemp(join(this.root, 'job-')); const workspaceId = basename(rootPath); const checkoutPath = join(rootPath, 'checkout');
     try {
@@ -28,12 +27,40 @@ export class WorkspaceService {
       // A file-based test fixture needs no auth; production URLs are canonical Azure HTTPS.
       await run(['fetch', '--no-tags', '--depth=1', 'origin', pr.sourceCommit], credential ?? undefined);
       await run(['fetch', '--no-tags', '--depth=1', 'origin', pr.targetCommit], credential ?? undefined);
+      // Never use the target tip as the PR baseline: it can contain unrelated changes.
+      // Bound history acquisition and retain GitProcessService's cancellation, timeout,
+      // credential isolation and output limits for every operation.
+      let commonAncestorCommit: string | undefined;
+      for (const depth of [1, 32, 128, 512, 2048, 8192]) {
+        if (depth > 1) await run(['fetch', '--no-tags', `--depth=${depth}`, 'origin', pr.sourceCommit, pr.targetCommit], credential ?? undefined);
+        let ancestors: string[];
+        try { ancestors = (await run(['merge-base', '--all', pr.targetCommit, pr.sourceCommit])).trim().split('\n').filter(Boolean); }
+        catch (error) {
+          // Exit 1 without stderr means no merge base in the available history.
+          // Cancellation, timeout, transport and resource errors must propagate.
+          if (!(error instanceof Error) || error.message !== 'Git failed') throw error;
+          continue;
+        }
+        if (ancestors.length !== 1) continue;
+        const candidate = ancestors[0]!;
+        let shallow: string[] = [];
+        try { shallow = (await readFile(join(checkoutPath, '.git', 'shallow'), 'utf8')).trim().split('\n'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        // A truncated path outside the candidate's ancestry could hide another
+        // merge base. Only accept the candidate when all such paths are complete.
+        const beyondBase = new Set((await run(['rev-list', pr.sourceCommit, pr.targetCommit, '--not', candidate])).trim().split('\n'));
+        if (shallow.some(commit => beyondBase.has(commit))) continue;
+        commonAncestorCommit = candidate; break;
+      }
+      if (!commonAncestorCommit) throw new Error('Cannot establish a reliable common ancestor for the pinned source and target revisions after bounded history fetching (maximum depth 8192). Verify related branches and remote history availability, or use revisions with reachable ancestry.');
       await run(['-c', 'core.autocrlf=false', 'checkout', '--detach', pr.sourceCommit]);
-      const diff = await run(['diff', '--no-ext-diff', '--no-textconv', pr.targetCommit, pr.sourceCommit, '--'], undefined, settings.limits.hardDiffBytes);
+      const comparison = ['--no-ext-diff', '--no-textconv', commonAncestorCommit, pr.sourceCommit, '--'];
+      const diff = await run(['diff', ...comparison], undefined, settings.limits.hardDiffBytes);
       if (Buffer.byteLength(diff) > settings.limits.hardDiffBytes) throw new Error('PR exceeds diff hard limit');
-      const changed = (await run(['diff', '--name-only', '-z', pr.targetCommit, pr.sourceCommit, '--'])).split('\0').filter(Boolean);
+      const changed = (await run(['diff', '--name-only', '-z', ...comparison])).split('\0').filter(Boolean);
       if (changed.length > settings.limits.hardChangedFiles) throw new Error('PR exceeds changed-file hard limit');
       const exclusions: PreparedWorkspace['exclusions'] = []; const warnings: string[] = [];
+      if (changed.length !== pr.changedFiles) warnings.push(`Pinned merge-base diff contains ${changed.length} paths; Azure iteration metadata reports ${pr.changedFiles} tracked changes. Counts can differ for iteration target snapshots or rename tracking; inspect metadata before treating this as a defect.`);
       for (const path of changed) {
         const local = resolve(checkoutPath, path); const rel = relative(checkoutPath, local);
         if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Git returned an invalid path');
@@ -54,7 +81,7 @@ export class WorkspaceService {
       const technologies: Record<string, unknown> = {};
       try { const manifest = JSON.parse(await readFile(join(checkoutPath, 'package.json'), 'utf8')); technologies.dependencies = manifest.dependencies ?? {}; technologies.devDependencies = manifest.devDependencies ?? {}; } catch { /* no JavaScript manifest */ }
       const diffPath = join(rootPath, 'diff.patch'); const metadataPath = join(rootPath, 'metadata.json'); const technologyManifestPath = join(rootPath, 'technology.json');
-      await writeFile(diffPath, diff); await writeFile(metadataPath, JSON.stringify({ pullRequest: pr, exclusions, warnings })); await writeFile(technologyManifestPath, JSON.stringify(technologies));
+      await writeFile(diffPath, diff); await writeFile(metadataPath, JSON.stringify({ pullRequest: pr, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, commonAncestorCommit, comparisonMode: 'merge-base-to-source', changedFiles: changed, exclusions, warnings })); await writeFile(technologyManifestPath, JSON.stringify(technologies));
       let standardsPath: string | null = null;
       if (input.standards) { standardsPath = join(rootPath, 'standards.txt'); await writeFile(standardsPath, await readFile(input.standards.storagePath)); }
       return { workspaceId, rootPath, checkoutPath, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, diffPath, metadataPath, technologyManifestPath, standardsPath, exclusions, warnings };
