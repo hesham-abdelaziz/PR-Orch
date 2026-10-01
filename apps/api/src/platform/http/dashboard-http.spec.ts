@@ -32,7 +32,14 @@ describe('dashboard HTTP with persistent SQLite', () => {
       controllers: [AuthController, SettingsController, StandardsController],
       providers: [
         { provide: AuthService, useValue: new AuthService(db) },
-        { provide: SettingsService, useValue: new SettingsService(db, root) },
+        { provide: SettingsService, useValue: new SettingsService(db, root, async () => [{
+          provider: 'claude', installed: true, authentication: { state: 'authenticated' },
+          refreshedAt: new Date().toISOString(),
+          modelCatalog: { discovery: 'maintained', models: [
+            { id: 'sonnet', label: 'Sonnet', available: true, supportedReasoningEfforts: ['low', 'high'] },
+            { id: 'haiku', label: 'Haiku', available: true },
+          ] },
+        }]) },
         { provide: StandardsService, useValue: new StandardsService(db, root) },
         { provide: SecretValuesService, useValue: secrets },
         {
@@ -118,6 +125,23 @@ describe('dashboard HTTP with persistent SQLite', () => {
             .send({ workspaceRoot: 'outside' })
         ).status,
       ).toBe(400);
+      const effortDefaults = {
+        defaultMain: { provider: 'claude', model: 'sonnet', reasoningEffort: 'high' },
+        defaultReviewers: [{ provider: 'claude', model: 'sonnet', reasoningEffort: 'low' }],
+      };
+      expect((await http.put('/api/settings').set('Cookie', cookie).send(effortDefaults)).status).toBe(200);
+      const savedEffortDefaults = (await http.get('/api/settings').set('Cookie', cookie)).body;
+      expect(savedEffortDefaults.defaultMain).toEqual(effortDefaults.defaultMain);
+      expect(savedEffortDefaults.defaultReviewers).toEqual(effortDefaults.defaultReviewers);
+      for (const reasoningEffort of ['invalid', 'max']) {
+        expect((await http.put('/api/settings').set('Cookie', cookie).send({
+          defaultReviewers: [{ provider: 'claude', model: 'sonnet', reasoningEffort }],
+        })).status).toBe(400);
+      }
+      expect((await http.put('/api/settings').set('Cookie', cookie).send({
+        defaultMain: { provider: 'claude', model: 'haiku', reasoningEffort: 'high' },
+      })).status).toBe(400);
+      expect((await http.get('/api/settings').set('Cookie', cookie)).body).toEqual(savedEffortDefaults);
       expect(
         (await http.get('/api/standards').set('Cookie', cookie)).body,
       ).toBeNull();

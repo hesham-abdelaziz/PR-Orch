@@ -42,6 +42,8 @@ import {
 } from '../settings/settings.controller.js';
 import { StandardsController } from '../standards/standards.controller.js';
 import { PullRequestsController } from './pull-requests.controller.js';
+import { ProvidersModule } from '../providers/providers.module.js';
+import { ProviderRegistryService } from '../providers/provider-registry.service.js';
 
 export const PLATFORM_DATABASE = Symbol('PLATFORM_DATABASE');
 export interface PlatformOptions {
@@ -104,8 +106,9 @@ export class PlatformModule {
       },
       {
         provide: SettingsService,
-        inject: [PLATFORM_DATABASE],
-        useFactory: (db: DataSource) => new SettingsService(db, root),
+        inject: [PLATFORM_DATABASE, ProviderRegistryService],
+        useFactory: (db: DataSource, registry: ProviderRegistryService) =>
+          new SettingsService(db, root, () => registry.getStatuses()),
       },
       {
         provide: StandardsService,
@@ -169,6 +172,7 @@ export class PlatformModule {
     ];
     return {
       module: PlatformModule,
+      imports: [ProvidersModule],
       controllers: [
         AuthController,
         SettingsController,

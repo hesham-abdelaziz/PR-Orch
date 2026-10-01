@@ -107,4 +107,77 @@ describe('durable review repository', () => {
     expect((await repository.queryJobs({}, { limit: 1, cursor: page.nextCursor! })).items[0]?.id).toBe('b');
     expect((await repository.queryJobs({ text: '%' }, { limit: 10 })).items.map(j => j.id)).toEqual(['a']);
   });
+  it('persists reasoningEffort for main and reviewer runs and preserves backward compatibility with records lacking effort', async () => {
+    const legacyJob = jobRecord({
+      id: uuid(),
+      main: { provider: 'claude', model: 'sonnet' },
+      reviewers: [{ provider: 'codex', model: 'cli-default' }],
+      state: 'completed',
+    });
+    const legacyRun = {
+      id: uuid(),
+      jobId: legacyJob.id,
+      role: 'reviewer' as const,
+      selection: { provider: 'codex' as const, model: 'cli-default' },
+      state: 'completed' as const,
+      startedAt: legacyJob.createdAt,
+      completedAt: legacyJob.completedAt,
+      warning: null,
+      attempts: 1,
+      sanitizedLog: 'done',
+      result: null,
+    };
+    await repository.createJob(legacyJob, [legacyRun]);
+
+    const retrievedLegacyJob = await repository.getJob(legacyJob.id);
+    expect(retrievedLegacyJob?.main.reasoningEffort).toBeUndefined();
+    const retrievedLegacyRuns = await repository.listRuns(legacyJob.id);
+    expect(retrievedLegacyRuns[0]?.selection.reasoningEffort).toBeUndefined();
+
+    const newJob = jobRecord({
+      id: uuid(),
+      main: { provider: 'claude', model: 'sonnet', reasoningEffort: 'high' },
+      reviewers: [
+        { provider: 'codex', model: 'o3', reasoningEffort: 'medium' },
+        { provider: 'gemini', model: 'pro', reasoningEffort: 'low' },
+      ],
+      state: 'completed',
+    });
+    const run1 = {
+      id: uuid(),
+      jobId: newJob.id,
+      role: 'reviewer' as const,
+      selection: { provider: 'codex' as const, model: 'o3', reasoningEffort: 'medium' as const },
+      state: 'completed' as const,
+      startedAt: newJob.createdAt,
+      completedAt: newJob.completedAt,
+      warning: null,
+      attempts: 1,
+      sanitizedLog: 'done',
+      result: null,
+    };
+    const run2 = {
+      id: uuid(),
+      jobId: newJob.id,
+      role: 'reviewer' as const,
+      selection: { provider: 'gemini' as const, model: 'pro', reasoningEffort: 'low' as const },
+      state: 'completed' as const,
+      startedAt: newJob.createdAt,
+      completedAt: newJob.completedAt,
+      warning: null,
+      attempts: 1,
+      sanitizedLog: 'done',
+      result: null,
+    };
+    await repository.createJob(newJob, [run1, run2]);
+
+    const retrievedNewJob = await repository.getJob(newJob.id);
+    expect(retrievedNewJob?.main.reasoningEffort).toBe('high');
+    expect(retrievedNewJob?.reviewers[0]?.reasoningEffort).toBe('medium');
+    expect(retrievedNewJob?.reviewers[1]?.reasoningEffort).toBe('low');
+
+    const retrievedRuns = await repository.listRuns(newJob.id);
+    expect(retrievedRuns[0]?.selection.reasoningEffort).toBe('medium');
+    expect(retrievedRuns[1]?.selection.reasoningEffort).toBe('low');
+  });
 });

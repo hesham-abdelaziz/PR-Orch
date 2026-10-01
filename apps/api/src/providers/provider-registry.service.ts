@@ -1,4 +1,10 @@
-import type { ModelSelection, ProviderId, ProviderStatus } from '@pr-orchestrator/contracts';
+import {
+  isReasoningEffortSupported,
+  getSupportedReasoningEfforts,
+  type ModelSelection,
+  type ProviderId,
+  type ProviderStatus,
+} from '@pr-orchestrator/contracts';
 
 import type { ProviderAdapter } from './provider-adapter.js';
 import { buildModelCatalog } from './model-catalog.service.js';
@@ -83,7 +89,11 @@ export class ProviderRegistryService {
     return this.refreshing;
   }
 
-  /** Throws unless the provider is usable and the model is listed as available. */
+  /**
+   * Throws unless the provider is usable, the model is listed as available, and
+   * any explicit reasoning effort is one the model advertises. Unsupported
+   * levels are rejected rather than silently replaced.
+   */
   async assertSelectable(selection: ModelSelection): Promise<void> {
     const statuses = await this.getStatuses();
     const status = statuses.find((candidate) => candidate.provider === selection.provider);
@@ -112,6 +122,11 @@ export class ProviderRegistryService {
     if (!model.available) {
       throw new ProviderNotSelectableError(
         `Model "${selection.model}" is unavailable: ${model.unavailableReason ?? 'disabled'}.`,
+      );
+    }
+    if (!isReasoningEffortSupported(model, selection.reasoningEffort)) {
+      throw new ProviderNotSelectableError(
+        `Reasoning effort "${selection.reasoningEffort ?? ''}" is not supported by ${selection.provider} model "${selection.model}". Choose one of: ${getSupportedReasoningEfforts(model).join(', ')}.`,
       );
     }
   }

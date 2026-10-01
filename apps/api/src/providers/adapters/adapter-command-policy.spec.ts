@@ -253,4 +253,57 @@ describe('assertCommandPolicy', () => {
 
     expect(() => assertCommandPolicy('claude', args, prompt)).toThrow(/too long/i);
   });
+
+  describe('reasoning effort', () => {
+    const PROMPT = 'Review this pull request for defects.';
+    const codexBase = { model: 'gpt-local', schemaPath: 'C:/t/schema.json', workspacePath: 'C:/t/ws' };
+
+    it('adds nothing for an absent or default effort', () => {
+      const plain = buildCodexReviewArgs(codexBase);
+      expect(buildCodexReviewArgs({ ...codexBase, reasoningEffort: 'default' })).toEqual(plain);
+      expect(plain.some((argument) => argument.includes('model_reasoning_effort'))).toBe(false);
+
+      const claude = buildClaudeReviewArgs({ model: 'opus', schemaJson: SCHEMA });
+      expect(buildClaudeReviewArgs({ model: 'opus', schemaJson: SCHEMA, reasoningEffort: 'default' })).toEqual(claude);
+      expect(claude).not.toContain('--effort');
+    });
+
+    it('passes Codex effort as a per-run -c override before the stdin marker, keeping read-only controls', () => {
+      const args = buildCodexReviewArgs({ ...codexBase, reasoningEffort: 'high' });
+
+      expect(args.slice(-3)).toEqual(['-c', 'model_reasoning_effort="high"', '-']);
+      expect(() => assertCommandPolicy('codex', args, PROMPT)).not.toThrow();
+    });
+
+    it('passes Claude effort through --effort, keeping plan and restricted modes', () => {
+      const args = buildClaudeReviewArgs({ model: 'opus', schemaJson: SCHEMA, reasoningEffort: 'max' });
+
+      expect(args.slice(-2)).toEqual(['--effort', 'max']);
+      expect(() => assertCommandPolicy('claude', args, PROMPT)).not.toThrow();
+    });
+
+    it('refuses levels a CLI does not accept instead of substituting another', () => {
+      expect(() => buildCodexReviewArgs({ ...codexBase, reasoningEffort: 'max' })).toThrow(/not supported by the codex CLI/);
+    });
+
+    it.each([
+      ['sandbox override', ['-c', 'sandbox_mode="danger-full-access"']],
+      ['approval override', ['--config', 'approval_policy="on-request"']],
+      ['inline --config', ['--config=sandbox_mode="workspace-write"']],
+      ['attached -c', ['-csandbox_mode="danger-full-access"']],
+      ['unknown effort', ['-c', 'model_reasoning_effort="ludicrous"']],
+      ['dangling -c', ['-c']],
+    ])('rejects a Codex %s', (_name, extra) => {
+      const args = buildCodexReviewArgs(codexBase);
+      const withExtra = [...args.slice(0, -1), ...extra, '-'];
+
+      expect(() => assertCommandPolicy('codex', withExtra, PROMPT)).toThrow(/Command policy violation/);
+    });
+
+    it.each(['ultracode', 'auto', 'default', ''])('rejects Claude --effort %j', (value) => {
+      const args = [...buildClaudeReviewArgs({ model: 'opus', schemaJson: SCHEMA }), '--effort', value];
+
+      expect(() => assertCommandPolicy('claude', args, PROMPT)).toThrow(/Command policy violation/);
+    });
+  });
 });

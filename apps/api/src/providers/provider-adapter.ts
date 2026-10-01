@@ -2,6 +2,7 @@ import type {
   AuthenticationState,
   ModelCatalog,
   ProviderId,
+  ReasoningEffort,
 } from '@pr-orchestrator/contracts';
 
 /** An executable that can be spawned with `shell: false`. */
@@ -30,6 +31,11 @@ export interface ProviderInstallation {
 export interface ProviderRunRequest {
   runId: string;
   model: string;
+  /**
+   * Requested reasoning effort, validated against the model catalog before the
+   * job starts. Absent or 'default' keeps the CLI's own configured effort.
+   */
+  reasoningEffort?: ReasoningEffort;
   /**
    * Absolute checkout root: the process cwd (and Codex `--cd`). Finding paths
    * are relative to it.
@@ -65,6 +71,13 @@ export interface ProviderFailure {
   kind: ProviderFailureKind;
   /** Actionable, secret-free, length-bounded. */
   message: string;
+  /** Process exit code when the CLI ran and exited; `null` when it was terminated. */
+  exitCode?: number | null;
+  /**
+   * Redacted, bounded tail of the CLI's error output for the run log. CLIs print
+   * banners first and the fatal error last, so the tail carries the cause.
+   */
+  diagnostics?: string;
 }
 
 interface ProviderRunBase {

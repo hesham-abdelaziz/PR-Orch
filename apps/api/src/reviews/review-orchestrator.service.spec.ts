@@ -24,7 +24,10 @@ import {
   type Script,
 } from '../../../../tests/fixtures/fake-clis/orchestrator-harness.js';
 import { jobRecord, settings as makeSettings } from '../../../../tests/fixtures/fake-clis/engine-fixtures.js';
-import { waitFor } from '../../../../tests/fixtures/fake-clis/scenarios.js';
+import { createFakeProviderKit, waitFor } from '../../../../tests/fixtures/fake-clis/scenarios.js';
+import { CodexAdapter } from '../providers/adapters/codex.adapter.js';
+import { GeminiAdapter } from '../providers/adapters/gemini.adapter.js';
+import { ProcessSupervisor } from '../providers/process/process-supervisor.service.js';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -252,6 +255,68 @@ describe('ReviewOrchestratorService — reviewer outcomes', () => {
     expect(h.providers.adapters.claude.calls).toHaveLength(0);
     expect(await h.repository.getReport(id)).toBeNull();
     expect(h.workspace.cleaned).toEqual([`ws-${id}`]);
+  });
+
+  // Regression (review 9db2497e, PR 5846): both reviewer CLIs ran and exited
+  // non-zero, but every reviewer run was persisted with an empty sanitized log,
+  // no exit status, and a job reason that did not say which stage failed.
+  it('persists the failing stage, exit codes, and sanitized CLI diagnostics when real reviewer processes fail', async () => {
+    const supervisor = new ProcessSupervisor({ terminationGraceMs: 100 });
+    const environment = () => ({ PATH: process.env['PATH'] });
+    const codexKit = createFakeProviderKit('codex', {
+      version: '0.99.0',
+      run: 'banner-then-error',
+      fatalMessage: 'selected model is not available for this CLI build',
+    });
+    const geminiKit = createFakeProviderKit('gemini', { version: '0.30.1', run: 'ineligible-account' });
+    const codex = new CodexAdapter({ supervisor, locator: codexKit.locator, environment });
+    const gemini = new GeminiAdapter({
+      supervisor,
+      locator: geminiKit.locator,
+      environment,
+      sandboxAvailable: () => false,
+      homeDirectory: '/home/tester',
+      fileSystem: { isFile: () => false },
+    });
+    const cwd = await mkdtemp(join(tmpdir(), 'orchestrator-real-cli-'));
+    const h = await harness({
+      scripts: {
+        // Real adapters and processes; only the (in-memory) checkout path is swapped for a real directory.
+        codex: (request) => codex.runReview({ ...request, workspacePath: cwd, readOnlyDirectories: [] }),
+        gemini: (request) => gemini.runReview({ ...request, workspacePath: cwd, readOnlyDirectories: [] }),
+        claude: verifierAcceptAll,
+      },
+    });
+
+    const { id, record, runs } = await runToEnd(h, {
+      reviewers: [CODEX, { provider: 'gemini', model: 'flash' }],
+    });
+
+    expect(record.state).toBe('failed');
+    expect(record.failureReason).toMatch(/^Failed during reviewing: All reviewers failed\./u);
+    expect(record.failureReason).toContain('codex rejected the selected model (exited with code 1)');
+    expect(record.failureReason).toContain('selected model is not available for this CLI build');
+    expect(record.failureReason).toContain('exited with code 41');
+    // The reason reaches clients through the job's warnings.
+    expect(record.warnings).toContain(record.failureReason);
+
+    const codexRun = runs.find((run) => run.selection.provider === 'codex');
+    const geminiRun = runs.find((run) => run.selection.provider === 'gemini');
+    const verifierRun = runs.find((run) => run.role === 'verifier');
+    expect(codexRun?.state).toBe('failed');
+    expect(codexRun?.sanitizedLog).toMatch(/attempt 1: codex failed \(model_unavailable, exit code 1\)/u);
+    expect(codexRun?.sanitizedLog).toContain('FATAL: selected model is not available for this CLI build');
+    expect(codexRun?.sanitizedLog).toContain('Fake Codex v0.99.0');
+    expect(geminiRun?.state).toBe('failed');
+    expect(geminiRun?.sanitizedLog).toMatch(/attempt 1: gemini failed \(authentication, exit code 41\)/u);
+    expect(geminiRun?.warning).toContain('GEMINI_API_KEY');
+    // The verifier never ran; it is settled, not reported as its own failure.
+    expect(verifierRun).toMatchObject({ state: 'cancelled', attempts: 0, warning: 'Not run because the review failed.' });
+    expect(h.providers.adapters.claude.calls).toHaveLength(0);
+    expect(await h.repository.getReport(id)).toBeNull();
+    expect(codexKit.readRuns()).toHaveLength(1);
+    expect(geminiKit.readRuns()).toHaveLength(1);
+    await rm(cwd, { recursive: true, force: true });
   });
 
   it('records normalized reviewer exclusions and workspace exclusions in the report', async () => {
@@ -1120,5 +1185,39 @@ describe('ReviewOrchestratorService — verified-finding evidence and location',
       await rm(base, { recursive: true, force: true });
     }
   });
+
 });
 
+describe('ReviewOrchestratorService — reasoning effort', () => {
+  it('sends each run its own effort on every attempt, including correction retries', async () => {
+    const h = await harness({
+      scripts: {
+        codex: (request, index) =>
+          completed('codex', request, index === 0 ? 'no JSON here' : reviewerJson([wireFinding()])),
+        gemini: reviewerOk('Another finding on parsing'),
+        claude: (request, index) => completed('claude', request, index === 0 ? 'not json' : acceptAll(request.prompt)),
+      },
+    });
+
+    const { record, runs } = await runToEnd(h, {
+      main: { provider: 'claude', model: 'opus', reasoningEffort: 'max' },
+      reviewers: [{ ...CODEX, reasoningEffort: 'high' }, { ...GEMINI, reasoningEffort: 'default' }],
+    });
+
+    expect(record.state).toBe('completed');
+    expect(h.providers.adapters.codex.calls.map((call) => call.reasoningEffort)).toEqual(['high', 'high']);
+    expect(h.providers.adapters.claude.calls.map((call) => call.reasoningEffort)).toEqual(['max', 'max']);
+    expect(h.providers.adapters.gemini.calls.map((call) => call.reasoningEffort)).toEqual(['default']);
+    expect(runs.find((run) => run.role === 'verifier')?.selection.reasoningEffort).toBe('max');
+  });
+
+  it('leaves the effort unset for legacy selections', async () => {
+    const h = await harness(twoReviewers());
+
+    await runToEnd(h);
+
+    for (const adapter of Object.values(h.providers.adapters)) {
+      expect(adapter.calls.every((call) => !('reasoningEffort' in call))).toBe(true);
+    }
+  });
+});

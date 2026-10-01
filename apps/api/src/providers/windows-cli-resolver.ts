@@ -112,11 +112,48 @@ export class WindowsCliResolver implements CliLocator {
 
   private searchDirectories(): string[] {
     const raw = this.environmentValue('PATH') ?? '';
+    const excluded = this.appManagedRoots();
 
     return raw
       .split(this.pathApi.delimiter)
       .map((entry) => entry.trim().replace(/^"(.*)"$/u, '$1'))
-      .filter((entry) => entry.length > 0 && this.pathApi.isAbsolute(entry));
+      .filter((entry) => entry.length > 0 && this.pathApi.isAbsolute(entry))
+      .filter((entry) => !excluded.some((root) => this.isWithin(entry, root)));
+  }
+
+  /**
+   * Directories whose executables are private copies managed by another app,
+   * never a user's CLI installation. The Codex desktop app keeps state and
+   * helper binaries under its home (CODEX_HOME, default `~/.codex`), e.g. the
+   * stale sandbox copy `.sandbox-bin\codex.exe`, and prepends such folders to
+   * PATH for processes it launches. A backend started from there must still
+   * run the user's installed, detected CLI rather than those copies.
+   */
+  private appManagedRoots(): string[] {
+    const configured = this.environmentValue('CODEX_HOME');
+    const home = this.isWindows
+      ? this.environmentValue('USERPROFILE') ?? this.environmentValue('HOME')
+      : this.environmentValue('HOME');
+    const codexHome =
+      configured !== undefined && configured.trim().length > 0
+        ? configured.trim()
+        : home === undefined
+          ? undefined
+          : this.pathApi.join(home, '.codex');
+
+    return codexHome !== undefined && this.pathApi.isAbsolute(codexHome) ? [codexHome] : [];
+  }
+
+  private isWithin(directory: string, root: string): boolean {
+    const normalize = (value: string) => {
+      const resolved = this.pathApi.resolve(value).replace(/[\\/]+$/u, '');
+
+      return this.isWindows ? resolved.toLowerCase() : resolved;
+    };
+    const candidate = normalize(directory);
+    const base = normalize(root);
+
+    return candidate === base || candidate.startsWith(`${base}${this.pathApi.sep}`);
   }
 
   private extensions(): string[] {

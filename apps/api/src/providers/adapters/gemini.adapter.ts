@@ -10,6 +10,16 @@ import { buildGeminiReviewArgs } from './adapter-command-policy.js';
 import { BaseCliAdapter, type CliAdapterDependencies } from './base-cli.adapter.js';
 import { loginHint } from './provider-failure.js';
 
+/**
+ * No entry advertises reasoning effort yet, so Gemini runs are Default-only and
+ * explicit levels are rejected before job creation. A per-run thinking overlay
+ * is not wired because no safe mechanism is verified: GEMINI_CLI_HOME relocates
+ * the whole user home (OAuth credentials included); GEMINI_CLI_SYSTEM_SETTINGS_PATH
+ * would bypass an administrator's system settings file; the system-defaults
+ * layer is outranked by user and workspace settings. The aliases also resolve
+ * to Gemini 3 models (named `thinkingLevel`) with Gemini 2.5 fallbacks (numeric
+ * `thinkingBudget`), which needs a documented per-model mapping first.
+ */
 const MAINTAINED_MODELS = [
   { id: 'cli-default', label: "CLI default (the CLI's own configured model)" },
   { id: 'pro', label: 'Pro (alias)' },

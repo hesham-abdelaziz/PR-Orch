@@ -139,6 +139,85 @@ describe('WindowsCliResolver', () => {
     });
   });
 
+  // Regression (review 9db2497e, PR 5846): a backend started from a Codex
+  // desktop session inherited a PATH whose first native codex.exe was the app's
+  // private sandbox copy (`~/.codex/.sandbox-bin`, CLI 0.144.5). Reviews ran that
+  // stale copy, which could not parse the shared models cache or the configured
+  // model, instead of the user's installed CLI.
+  it('skips app-managed Codex home copies on PATH and runs the installed Codex CLI', () => {
+    const resolver = new WindowsCliResolver({
+      platform: 'win32',
+      environment: {
+        Path: [
+          'C:\\Users\\me\\.codex\\.sandbox-bin',
+          'C:\\Users\\me\\.codex\\plugins\\.plugin-appserver',
+          'C:\\Users\\me\\AppData\\Roaming\\npm',
+          'C:\\Users\\me\\AppData\\Local\\Programs\\codex',
+        ].join(';'),
+        PATHEXT: '.EXE;.CMD',
+        USERPROFILE: 'C:\\Users\\me',
+      },
+      fileSystem: memoryFileSystem({
+        'C:\\Users\\me\\.codex\\.sandbox-bin\\codex.exe': '',
+        'C:\\Users\\me\\.codex\\plugins\\.plugin-appserver\\codex.exe': '',
+        'C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd': NPM_CODEX_SHIM,
+        'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js': '',
+        'C:\\Users\\me\\AppData\\Local\\Programs\\codex\\codex.exe': '',
+      }),
+      nodeExecutablePath: NODE,
+    });
+
+    expect(resolver.locate('codex')).toEqual({
+      executablePath: 'C:\\Users\\me\\AppData\\Local\\Programs\\codex\\codex.exe',
+      prefixArgs: [],
+    });
+  });
+
+  it('honors CODEX_HOME, case-insensitively, when excluding app-managed copies', () => {
+    const resolver = new WindowsCliResolver({
+      platform: 'win32',
+      environment: {
+        Path: 'D:\\CodexState\\.sandbox-bin;C:\\npm',
+        PATHEXT: '.EXE;.CMD',
+        CODEX_HOME: 'd:\\codexstate\\',
+        USERPROFILE: 'C:\\Users\\me',
+      },
+      fileSystem: memoryFileSystem({
+        'D:\\CodexState\\.sandbox-bin\\codex.exe': '',
+        'C:\\npm\\codex.cmd': NPM_CODEX_SHIM,
+        'C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js': '',
+      }),
+      nodeExecutablePath: NODE,
+    });
+
+    expect(resolver.locate('codex')).toEqual({
+      executablePath: NODE,
+      prefixArgs: ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js'],
+    });
+  });
+
+  it('reports Codex as missing rather than running an app-managed copy', () => {
+    const resolver = new WindowsCliResolver({
+      platform: 'win32',
+      environment: { Path: 'C:\\Users\\me\\.codex\\.sandbox-bin', PATHEXT: '.EXE', USERPROFILE: 'C:\\Users\\me' },
+      fileSystem: memoryFileSystem({ 'C:\\Users\\me\\.codex\\.sandbox-bin\\codex.exe': '' }),
+      nodeExecutablePath: NODE,
+    });
+
+    expect(resolver.locate('codex')).toBeUndefined();
+  });
+
+  it('does not exclude a sibling directory that merely shares the Codex home prefix', () => {
+    const resolver = new WindowsCliResolver({
+      platform: 'win32',
+      environment: { Path: 'C:\\Users\\me\\.codex-tools', PATHEXT: '.EXE', USERPROFILE: 'C:\\Users\\me' },
+      fileSystem: memoryFileSystem({ 'C:\\Users\\me\\.codex-tools\\codex.exe': '' }),
+      nodeExecutablePath: NODE,
+    });
+
+    expect(resolver.locate('codex')?.executablePath).toBe('C:\\Users\\me\\.codex-tools\\codex.exe');
+  });
+
   it('falls back to the npm shim for Codex when no native executable exists', () => {
     const resolver = windowsResolver(
       {

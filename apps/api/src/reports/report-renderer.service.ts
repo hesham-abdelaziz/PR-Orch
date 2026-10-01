@@ -36,6 +36,12 @@ const RUN_STATE_LABEL: Record<string, string> = {
 const label = (selection: ModelSelection): string =>
   sanitizeInline(`${selection.provider}/${selection.model}`);
 
+/** Requested (not verified-effective) effort: providers may clamp it to account caps. */
+const withEffort = (selection: ModelSelection): string =>
+  selection.reasoningEffort === undefined || selection.reasoningEffort === 'default'
+    ? label(selection)
+    : `${label(selection)} (requested reasoning effort: ${selection.reasoningEffort})`;
+
 /** Renders the canonical Markdown report from validated structured data only. */
 @Injectable()
 export class ReportRenderer {
@@ -84,12 +90,12 @@ export class ReportRenderer {
   }
 
   private models(lines: string[], job: ReviewJob): void {
-    lines.push('## Models', '', `- Main verifier: ${label(job.main)}`);
+    lines.push('## Models', '', `- Main verifier: ${withEffort(job.main)}`);
 
     for (const reviewer of job.reviewers) {
       const state = RUN_STATE_LABEL[reviewer.state] ?? reviewer.state;
       const note = reviewer.warning ? ` (${sanitizeInline(reviewer.warning)})` : '';
-      lines.push(`- Reviewer ${label(reviewer.selection)}: ${state}${note}`);
+      lines.push(`- Reviewer ${withEffort(reviewer.selection)}: ${state}${note}`);
     }
 
     lines.push('');

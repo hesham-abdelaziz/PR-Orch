@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildModelCatalog,
+  codexHomeDirectory,
   discoverConfiguredModels,
+  readCodexModelCache,
 } from './model-catalog.service.js';
 
 const maintained = [
@@ -148,5 +150,114 @@ describe('discoverConfiguredModels', () => {
         fileSystem: { readText: () => 'model = "--yolo"' },
       }),
     ).toEqual([]);
+  });
+
+  it('carries reasoning effort capabilities, including for unavailable CLIs and configured models', () => {
+    const catalog = buildModelCatalog({
+      maintained: [
+        { id: 'cli-default', label: 'CLI default' },
+        { id: 'opus', label: 'Opus', supportedReasoningEfforts: ['low', 'high'] },
+      ],
+      configured: ['custom-1'],
+      configuredReasoningEfforts: ['medium'],
+      unavailableReason: 'too old',
+    });
+
+    expect(catalog.models).toEqual([
+      { id: 'cli-default', label: 'CLI default', available: false, unavailableReason: 'too old' },
+      { id: 'opus', label: 'Opus', available: false, unavailableReason: 'too old', supportedReasoningEfforts: ['low', 'high'] },
+      {
+        id: 'custom-1',
+        label: 'custom-1 (configured locally)',
+        available: false,
+        unavailableReason: 'too old',
+        supportedReasoningEfforts: ['medium'],
+      },
+    ]);
+  });
+});
+
+describe('readCodexModelCache', () => {
+  const home = 'C:\\Users\\me\\.codex';
+  const cachePath = win32.join(home, 'models_cache.json');
+  const read = (text: string | undefined) =>
+    readCodexModelCache({
+      codexHome: home,
+      pathApi: win32,
+      fileSystem: { readText: (path) => (path === cachePath ? text : undefined) },
+    });
+  // Shape of Codex's models_cache.json (synthetic values).
+  const cache = (models: unknown[]) =>
+    JSON.stringify({ fetched_at: '2026-09-30T00:00:00Z', client_version: '0.0.0', models });
+
+  it('returns listed models with labels and only the efforts the Codex CLI accepts', () => {
+    const models = read(
+      cache([
+        {
+          slug: 'gpt-6.1-sol',
+          display_name: 'GPT-6.1-Sol',
+          visibility: 'list',
+          supported_reasoning_levels: [
+            { effort: 'low' },
+            { effort: 'medium' },
+            { effort: 'xhigh' },
+            { effort: 'max' },
+            { effort: 'ultra' },
+          ],
+        },
+        { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_reasoning_levels: ['low', 'high'] },
+        { slug: 'plain', visibility: 'list' },
+      ]),
+    );
+
+    expect(models).toEqual([
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol (gpt-6.1-sol)', supportedReasoningEfforts: ['low', 'medium', 'xhigh'] },
+      { id: 'gpt-5.5', label: 'GPT-5.5 (gpt-5.5)', supportedReasoningEfforts: ['low', 'high'] },
+      { id: 'plain', label: 'plain' },
+    ]);
+  });
+
+  it('skips hidden, duplicate, unsafe and reserved entries', () => {
+    const models = read(
+      cache([
+        { slug: 'gpt-reserve', visibility: 'hide' },
+        { slug: 'gpt-a', visibility: 'list' },
+        { slug: 'gpt-a', visibility: 'list' },
+        { slug: '--dangerously-bypass', visibility: 'list' },
+        { slug: 'cli-default', visibility: 'list' },
+        { slug: 42, visibility: 'list' },
+        'not-an-object',
+      ]),
+    );
+
+    expect(models?.map((model) => model.id)).toEqual(['gpt-a']);
+  });
+
+  it('returns undefined for a missing, malformed, or unrecognized cache', () => {
+    expect(read(undefined)).toBeUndefined();
+    expect(read('{ not json')).toBeUndefined();
+    expect(read(JSON.stringify({ items: [] }))).toBeUndefined();
+    expect(read(JSON.stringify([]))).toBeUndefined();
+    expect(read(cache([{ slug: 'hidden', visibility: 'hide' }]))).toBeUndefined();
+  });
+
+  it('bounds labels and the number of models', () => {
+    const many = Array.from({ length: 150 }, (_, index) => ({
+      slug: `gpt-${index}`,
+      display_name: 'x'.repeat(500),
+      visibility: 'list',
+    }));
+    const models = read(cache(many));
+
+    expect(models).toHaveLength(100);
+    expect(models?.every((model) => model.label.length <= 200)).toBe(true);
+  });
+});
+
+describe('codexHomeDirectory', () => {
+  it('honors an absolute CODEX_HOME and otherwise uses <home>/.codex', () => {
+    expect(codexHomeDirectory({ CODEX_HOME: 'D:\\codex' }, 'C:\\Users\\me', win32)).toBe('D:\\codex');
+    expect(codexHomeDirectory({ CODEX_HOME: 'relative' }, 'C:\\Users\\me', win32)).toBe('C:\\Users\\me\\.codex');
+    expect(codexHomeDirectory({}, '/home/me', posix)).toBe('/home/me/.codex');
   });
 });

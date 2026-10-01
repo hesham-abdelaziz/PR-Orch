@@ -89,6 +89,8 @@ export interface ReviewOrchestratorOptions {
 export const MAX_REVIEWER_PROCESSES = 3;
 const MAX_LOG_CHARACTERS = 4_096;
 const MAX_STDERR_IN_LOG = 1_500;
+const MAX_JOB_WARNINGS = 100;
+const FAILABLE_STAGES: ReadonlySet<string> = new Set(['queued', 'preparing', 'reviewing', 'verifying', 'rendering']);
 const MAX_REVIEWER_WARNINGS = 5;
 
 interface Runtime {
@@ -486,6 +488,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const result = await this.invoke(ctx, adapter, selection.provider, {
         runId: attempt === 1 ? run.id : `${run.id}-c${attempt - 1}`,
         model: selection.model,
+        // Every attempt, including correction retries, keeps the run's effort.
+        ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
         workspacePath: checkout,
         readOnlyDirectories: ready.layout.readOnlyDirectories,
         prompt,
@@ -498,6 +502,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       run = { ...run, attempts: attempt };
 
       if (result.status !== 'completed') {
+        log.push(...describeUnfinishedAttempt(attempt, result, record.settings.reviewerTimeoutMs));
+
         return this.reviewerEnded(run, result, record.settings.reviewerTimeoutMs, tag, log);
       }
       log.push(`attempt ${attempt} stderr: ${boundedSnippet(result.stderr, MAX_STDERR_IN_LOG)}`);
@@ -666,6 +672,8 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       const result = await this.invoke(ctx, adapter, selection.provider, {
         runId: attempt === 1 ? run.id : `${run.id}-c${attempt - 1}`,
         model: selection.model,
+        // Every attempt, including correction retries, keeps the run's effort.
+        ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
         workspacePath: checkout,
         readOnlyDirectories: ready.layout.readOnlyDirectories,
         prompt,
@@ -676,6 +684,9 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         maxStderrBytes: record.settings.maxStderrBytes,
       });
       run = { ...run, attempts: attempt };
+      if (result.status !== 'completed') {
+        log.push(...describeUnfinishedAttempt(attempt, result, record.settings.verifierTimeoutMs));
+      }
 
       if (result.status === 'cancelled') {
         await this.saveRun(run, { state: 'cancelled', completedAt: this.now(), sanitizedLog: this.makeLog(log) });
@@ -795,13 +806,28 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   }
 
   private async fail(ctx: Runtime, reason: string): Promise<void> {
+    // The job's state when it fails is the stage that failed; later stages never
+    // ran. Recording it keeps "failed in reviewing" distinct from "all failed".
+    const stage = await this.repository
+      .getJob(ctx.jobId)
+      .then((job) => job?.state)
+      .catch(() => undefined);
+    const failureReason = this.safeText(
+      stage === undefined || !FAILABLE_STAGES.has(stage) ? reason : `Failed during ${stage}: ${reason}`,
+      1_000,
+    );
     await this.settleUnfinishedRuns(ctx.jobId, 'Not run because the review failed.');
+    // Warnings are the job's client-visible diagnostics channel.
+    ctx.warnings = [...ctx.warnings, failureReason].slice(-MAX_JOB_WARNINGS);
     const result = await this.stateMachine.transition(ctx.jobId, 'failed', {
-      failureReason: this.safeText(reason, 1_000),
+      failureReason,
       warnings: ctx.warnings,
     });
-    if (result.applied) this.events.jobStateChanged(ctx.jobId, 'failed');
-    else if (result.job?.state === 'cancelling') await this.finishCancelled(ctx);
+    if (result.applied) {
+      // Emitted after the reason is persisted, so a later snapshot contains it.
+      this.events.warning(ctx.jobId, 'job_failed', failureReason);
+      this.events.jobStateChanged(ctx.jobId, 'failed');
+    } else if (result.job?.state === 'cancelling') await this.finishCancelled(ctx);
   }
 
   private async failUnexpected(ctx: Runtime, error: unknown): Promise<void> {
@@ -1009,4 +1035,36 @@ function mergeExclusions(
   }
 
   return merged.slice(0, 1_000);
+}
+
+/** Sanitized-log lines for an attempt that ended without output; redacted again by makeLog. */
+function describeUnfinishedAttempt(
+  attempt: number,
+  result: Exclude<ProviderRunResult, { status: 'completed' }>,
+  timeoutMs: number,
+): string[] {
+  switch (result.status) {
+    case 'cancelled':
+      return [`attempt ${attempt}: cancelled after ${result.durationMs} ms`];
+    case 'timed_out':
+      return [`attempt ${attempt}: timed out after ${Math.round(timeoutMs / 1_000)} s; the process tree was terminated`];
+    case 'failed': {
+      const { failure } = result;
+      const exit =
+        failure.exitCode === undefined
+          ? 'exit status unavailable'
+          : failure.exitCode === null
+            ? 'terminated without an exit code'
+            : `exit code ${failure.exitCode}`;
+      const lines = [`attempt ${attempt}: ${result.provider} failed (${failure.kind}, ${exit}) after ${result.durationMs} ms`];
+      if (failure.diagnostics) {
+        const text = failure.diagnostics;
+        lines.push(
+          `attempt ${attempt} stderr (tail): ${text.length <= MAX_STDERR_IN_LOG ? text : `…${text.slice(text.length - MAX_STDERR_IN_LOG + 1)}`}`,
+        );
+      }
+
+      return lines;
+    }
+  }
 }

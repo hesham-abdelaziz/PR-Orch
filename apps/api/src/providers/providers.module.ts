@@ -5,7 +5,7 @@ import { Module } from '@nestjs/common';
 import { ClaudeAdapter } from './adapters/claude.adapter.js';
 import { CodexAdapter } from './adapters/codex.adapter.js';
 import { GeminiAdapter } from './adapters/gemini.adapter.js';
-import { discoverConfiguredModels } from './model-catalog.service.js';
+import { codexHomeDirectory, discoverConfiguredModels, readCodexModelCache } from './model-catalog.service.js';
 import { ProcessSupervisor } from './process/process-supervisor.service.js';
 import {
   InMemoryProviderSnapshotStore,
@@ -45,7 +45,15 @@ export const PROVIDER_SNAPSHOT_STORE = Symbol('PROVIDER_SNAPSHOT_STORE');
         return new ProviderRegistryService({
           adapters: [
             new ClaudeAdapter({ ...shared, configuredModels: configured('claude') }),
-            new CodexAdapter({ ...shared, configuredModels: configured('codex') }),
+            new CodexAdapter({
+              ...shared,
+              configuredModels: configured('codex'),
+              accountModels: () =>
+                readCodexModelCache({
+                  codexHome: codexHomeDirectory(process.env, home),
+                  fileSystem: nodeFileSystem,
+                }),
+            }),
             new GeminiAdapter({
               ...shared,
               configuredModels: configured('gemini'),

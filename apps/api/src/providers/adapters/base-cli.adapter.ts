@@ -20,7 +20,11 @@ import type {
   ResolvedExecutable,
 } from '../provider-adapter.js';
 import { collectSecretValues, redactSecrets } from '../redact-secrets.js';
-import { assertCommandPolicy, assertSafeModelId } from './adapter-command-policy.js';
+import {
+  NATIVE_REASONING_EFFORTS,
+  assertCommandPolicy,
+  assertSafeModelId,
+} from './adapter-command-policy.js';
 import { classifyProviderFailure } from './provider-failure.js';
 
 export interface CliAdapterDependencies {
@@ -132,6 +136,11 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
 
     try {
       assertSafeModelId(request.model);
+      // Never drop an explicit effort silently, even for a provider without a mechanism.
+      const effort = request.reasoningEffort;
+      if (effort !== undefined && effort !== 'default' && !NATIVE_REASONING_EFFORTS[this.id].has(effort)) {
+        throw new Error(`Reasoning effort "${effort}" cannot be applied by the ${this.id} CLI`);
+      }
       if (!isAbsolute(request.workspacePath) || !isAbsolute(request.outputSchemaPath)) {
         throw new Error('workspacePath and outputSchemaPath must be absolute paths');
       }

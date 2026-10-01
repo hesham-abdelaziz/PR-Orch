@@ -208,4 +208,40 @@ describe('ClaudeAdapter with the Windows npm wrapper', () => {
     });
     expect(spawned).toEqual([{ executablePath: exe, args: ['--version'] }]);
   });
+
+  it('delivers the requested reasoning effort to the claude process through --effort', async () => {
+    const { kit, adapter } = create();
+    const directory = mkdtempSync(join(tmpdir(), 'claude-effort-'));
+    const schemaPath = join(directory, 'schema.json');
+    writeFileSync(schemaPath, '{"type":"object"}');
+
+    const result = await adapter.runReview({
+      runId: 'claude-effort',
+      model: 'opus',
+      reasoningEffort: 'xhigh',
+      workspacePath: directory,
+      prompt: 'review it',
+      outputSchemaPath: schemaPath,
+      timeoutMs: 15_000,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.status).toBe('completed');
+    const [run] = kit.readRuns();
+    expect(run?.argv.slice(-2)).toEqual(['--effort', 'xhigh']);
+    expect(run?.argv).toContain('--restricted');
+  });
+
+  it('advertises documented effort levels per alias, and none for haiku or the CLI default', async () => {
+    const catalog = await create({}, { configuredModels: ['claude-custom'] }).adapter.listModels();
+    const efforts = Object.fromEntries(catalog.models.map((model) => [model.id, model.supportedReasoningEfforts]));
+    const full = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+    expect(efforts['opus']).toEqual(full);
+    expect(efforts['sonnet']).toEqual(full);
+    expect(efforts['fable']).toEqual(full);
+    expect(efforts['haiku']).toBeUndefined();
+    expect(efforts['cli-default']).toBeUndefined();
+    expect(efforts['claude-custom']).toBeUndefined();
+  });
 });

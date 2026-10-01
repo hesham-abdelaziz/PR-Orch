@@ -241,4 +241,24 @@ describe('ReportRenderer', () => {
     expect(renderer.render(base)).toBe(renderer.render(base));
     expect(renderer.render(shuffled)).toBe(renderer.render(base));
   });
+
+  it('shows each requested reasoning effort in the model list, and nothing for Default', () => {
+    const base = job();
+    const markdown = renderer.render(
+      input({
+        job: {
+          ...base,
+          main: { ...claude, reasoningEffort: 'high' },
+          reviewers: base.reviewers.map((run, index) => ({
+            ...run,
+            selection: { ...run.selection, reasoningEffort: index === 0 ? 'low' : 'default' },
+          })),
+        },
+      }),
+    );
+
+    expect(markdown).toContain('- Main verifier: claude/opus (requested reasoning effort: high)');
+    expect(markdown).toContain('- Reviewer codex/cli-default (requested reasoning effort: low): completed');
+    expect(markdown).toMatch(/- Reviewer gemini\/pro: timed out/u);
+  });
 });

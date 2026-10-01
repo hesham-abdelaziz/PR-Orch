@@ -255,4 +255,43 @@ describe('ProviderRegistryService', () => {
     expect(registry.getAdapter('codex')).toBe(stub.adapter);
     expect(() => registry.getAdapter('claude')).toThrow(/not registered/i);
   });
+
+  describe('assertSelectable reasoning effort', () => {
+    const withEfforts = () =>
+      stubAdapter('claude', {
+        catalog: {
+          discovery: 'maintained',
+          models: [
+            { id: 'cli-default', label: 'CLI default', available: true },
+            { id: 'opus', label: 'Opus', available: true, supportedReasoningEfforts: ['low', 'medium', 'high'] },
+          ],
+        },
+      });
+
+    it('accepts an advertised level, Default, and an absent effort', async () => {
+      const { registry } = registryFor([withEfforts()]);
+
+      for (const reasoningEffort of ['high', 'default', undefined] as const) {
+        await expect(
+          registry.assertSelectable({ provider: 'claude', model: 'opus', ...(reasoningEffort ? { reasoningEffort } : {}) }),
+        ).resolves.toBeUndefined();
+      }
+    });
+
+    it('rejects a level the model does not advertise, naming the supported ones', async () => {
+      const { registry } = registryFor([withEfforts()]);
+
+      const attempt = registry.assertSelectable({ provider: 'claude', model: 'opus', reasoningEffort: 'max' });
+      await expect(attempt).rejects.toBeInstanceOf(ProviderNotSelectableError);
+      await expect(attempt).rejects.toThrow(/default, low, medium, high/);
+    });
+
+    it('rejects any explicit level for a model without capability metadata', async () => {
+      const { registry } = registryFor([withEfforts()]);
+
+      await expect(
+        registry.assertSelectable({ provider: 'claude', model: 'cli-default', reasoningEffort: 'low' }),
+      ).rejects.toBeInstanceOf(ProviderNotSelectableError);
+    });
+  });
 });

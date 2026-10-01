@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 
-import type { AuthenticationState, ModelCatalog } from '@pr-orchestrator/contracts';
+import type { AuthenticationState, ModelCatalog, ReasoningEffort } from '@pr-orchestrator/contracts';
 
-import { buildModelCatalog } from '../model-catalog.service.js';
+import { buildModelCatalog, type CatalogModel } from '../model-catalog.service.js';
 import type { ProviderRunRequest, ResolvedExecutable } from '../provider-adapter.js';
 import { buildClaudeReviewArgs } from './adapter-command-policy.js';
 import {
@@ -19,13 +19,24 @@ import { loginHint } from './provider-failure.js';
  */
 export const CLAUDE_MINIMUM_VERSION = [2, 1, 259] as const;
 
-const MAINTAINED_MODELS = [
+/**
+ * Levels from https://code.claude.com/docs/en/model-config (checked 2026-09-30):
+ * current Opus, Sonnet and Fable models accept low|medium|high|xhigh|max; Haiku
+ * does not support effort. Aliases can resolve to an older model on some
+ * platforms (e.g. Sonnet 4.5 on Bedrock); the CLI then falls back to the highest
+ * supported level at or below the request, and organization caps can clamp it
+ * further, so reports show the *requested* level only. `cli-default` resolves to
+ * an unknown model and therefore stays Default-only.
+ */
+const CLAUDE_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+const MAINTAINED_MODELS: readonly CatalogModel[] = [
   { id: 'cli-default', label: "CLI default (the CLI's own configured model)" },
-  { id: 'sonnet', label: 'Sonnet (latest alias)' },
-  { id: 'opus', label: 'Opus (latest alias)' },
+  { id: 'sonnet', label: 'Sonnet (latest alias)', supportedReasoningEfforts: CLAUDE_EFFORTS },
+  { id: 'opus', label: 'Opus (latest alias)', supportedReasoningEfforts: CLAUDE_EFFORTS },
   { id: 'haiku', label: 'Haiku (latest alias)' },
-  { id: 'fable', label: 'Fable (latest alias)' },
-] as const;
+  { id: 'fable', label: 'Fable (latest alias)', supportedReasoningEfforts: CLAUDE_EFFORTS },
+];
 
 export class ClaudeAdapter extends BaseCliAdapter {
   readonly id = 'claude' as const;
@@ -60,6 +71,7 @@ export class ClaudeAdapter extends BaseCliAdapter {
       model: request.model,
       schemaJson,
       readOnlyDirectories: request.readOnlyDirectories ?? [],
+      ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
     });
   }
 

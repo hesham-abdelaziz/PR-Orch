@@ -132,4 +132,43 @@ describe('GeminiAdapter', () => {
 
     expect(result).toMatchObject({ status: 'failed', failure: { kind: 'model_unavailable' } });
   });
+
+  it('reports an ineligible Google account as an authentication failure with its exit code', async () => {
+    const { adapter } = create({ run: 'ineligible-account' });
+
+    const result = await runOnce(adapter, 'flash');
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'authentication', exitCode: 41 } });
+    if (result.status !== 'failed') throw new Error('expected failure');
+    expect(result.failure.message).toContain('GEMINI_API_KEY');
+    expect(result.failure.message).toContain('exited with code 41');
+    expect(result.failure.diagnostics).toContain('IneligibleTierError');
+  });
+
+  it('advertises no explicit reasoning effort for any model', async () => {
+    const catalog = await create({}, { configuredModels: ['gemini-custom'] }).adapter.listModels();
+
+    expect(catalog.models.every((model) => model.supportedReasoningEfforts === undefined)).toBe(true);
+  });
+
+  it('fails an explicit effort before spawning instead of silently dropping it', async () => {
+    const { kit, adapter } = create();
+    const directory = mkdtempSync(join(tmpdir(), 'gemini-effort-'));
+    const schemaPath = join(directory, 'schema.json');
+    writeFileSync(schemaPath, '{"type":"object"}');
+
+    const result = await adapter.runReview({
+      runId: 'gemini-effort',
+      model: 'pro',
+      reasoningEffort: 'high',
+      workspacePath: directory,
+      prompt: 'review it',
+      outputSchemaPath: schemaPath,
+      timeoutMs: 15_000,
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({ status: 'failed', failure: { kind: 'invalid_request' } });
+    expect(kit.readRuns()).toHaveLength(0);
+  });
 });

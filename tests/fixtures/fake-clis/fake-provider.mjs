@@ -8,11 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { REVIEWER_SUCCESS_PAYLOAD } from './fake-cli.mjs';
 
 const DEFAULT_HELP = {
-  claude: 'Usage: claude [options] [prompt]\n',
+  claude: 'Usage: claude [options] [prompt]\n  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)\n',
   codex:
-    'Usage: codex [OPTIONS] [PROMPT]\n  -a, --ask-for-approval <POLICY>\n  -s, --sandbox <MODE>\n',
+    'Usage: codex [OPTIONS] [PROMPT]\n  -c, --config <key=value>\n  -a, --ask-for-approval <POLICY>\n  -s, --sandbox <MODE>\n',
   'codex-exec':
-    'Usage: codex exec [OPTIONS] [PROMPT]\n  -s, --sandbox <MODE>\n  --ephemeral\n  --output-schema <FILE>\n  -C, --cd <DIR>\n',
+    'Usage: codex exec [OPTIONS] [PROMPT]\n  -c, --config <key=value>\n  -s, --sandbox <MODE>\n  --ephemeral\n  --output-schema <FILE>\n  -C, --cd <DIR>\n',
   gemini:
     'Usage: gemini [options]\n  --approval-mode  choices: default, auto_edit, yolo, plan\n  -s, --sandbox\n  -o, --output-format\n',
 };
@@ -93,7 +93,9 @@ export async function runFakeProvider(provider, behavior = {}) {
     return 0;
   }
 
-  // Anything else is a review run: record exactly what the engine sent.
+  // Anything else is a review run: record exactly what the engine sent. Effort
+  // options (`--effort <level>`, `-c model_reasoning_effort="<level>"`) are
+  // accepted like any other argument and captured in `argv` for assertions.
   const stdin = await readStdin();
   if (behavior.logFile) {
     appendFileSync(
@@ -139,6 +141,33 @@ export async function runFakeProvider(provider, behavior = {}) {
         process.stderr.write(`${message}\n`);
       }
       return 1;
+    }
+    case 'banner-then-error': {
+      // Shape of a Codex exec failure: a non-fatal ERROR line and the session
+      // banner first, the fatal cause last. Text is synthetic, not a real CLI's.
+      process.stderr.write(
+        [
+          '2026-09-30T00:00:00.000000Z ERROR fake_models::cache: failed to load models cache: missing field `base_instructions`',
+          `Fake Codex v${behavior.version ?? '0.0.0'}`,
+          '--------',
+          `workdir: ${process.cwd()}`,
+          'model: fake-model',
+          'provider: fake',
+          'sandbox: read-only',
+          '--------',
+          ...Array.from({ length: 12 }, (_, index) => `banner detail line ${index + 1}`),
+          `FATAL: ${behavior.fatalMessage ?? 'synthetic fatal cause at the end of stderr'}`,
+          '',
+        ].join('\n'),
+      );
+      return 1;
+    }
+    case 'ineligible-account': {
+      process.stderr.write(
+        'Approval mode overridden to "default" because the current folder is not trusted.\n' +
+          'Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.\n',
+      );
+      return 41;
     }
     case 'model-not-found': {
       process.stderr.write(`Error: model "${behavior.badModel ?? 'x'}" not found (404)\n`);

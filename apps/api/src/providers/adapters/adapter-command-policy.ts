@@ -1,4 +1,4 @@
-import type { ProviderId } from '@pr-orchestrator/contracts';
+import type { ProviderId, ReasoningEffort } from '@pr-orchestrator/contracts';
 
 /** Sentinel model id meaning "omit --model and use the CLI's own configured default". */
 export const CLI_DEFAULT_MODEL = 'cli-default';
@@ -20,6 +20,32 @@ export function assertSafeModelId(model: string): void {
   }
 }
 
+/**
+ * Effort values each CLI accepts natively, verified against the providers' docs
+ * (Claude Code `--effort`: low|medium|high|xhigh|max; Codex
+ * `model_reasoning_effort`: minimal|low|medium|high|xhigh). Only the levels our
+ * shared vocabulary also names are allowed; Claude's `ultracode` workflow mode
+ * is deliberately excluded because it is not a model effort level.
+ */
+export const NATIVE_REASONING_EFFORTS: Readonly<Record<ProviderId, ReadonlySet<ReasoningEffort>>> = {
+  claude: new Set<ReasoningEffort>(['low', 'medium', 'high', 'xhigh', 'max']),
+  codex: new Set<ReasoningEffort>(['low', 'medium', 'high', 'xhigh']),
+  // No verified per-run thinking overlay yet: Gemini runs at the CLI default.
+  gemini: new Set<ReasoningEffort>(),
+};
+
+const CODEX_EFFORT_KEY = 'model_reasoning_effort';
+
+/** Returns the explicit effort to apply, or undefined for "use the CLI default". */
+function explicitEffort(provider: ProviderId, effort: ReasoningEffort | undefined): ReasoningEffort | undefined {
+  if (effort === undefined || effort === 'default') return undefined;
+  if (!NATIVE_REASONING_EFFORTS[provider].has(effort)) {
+    throw new Error(`Reasoning effort "${effort}" is not supported by the ${provider} CLI`);
+  }
+
+  return effort;
+}
+
 function modelArgs(model: string): string[] {
   assertSafeModelId(model);
 
@@ -31,7 +57,11 @@ export function buildClaudeReviewArgs(input: {
   schemaJson: string;
   /** Directories outside the working directory that hold read-only context files. */
   readOnlyDirectories?: readonly string[];
+  /** Requested effort; absent or 'default' leaves the CLI's own setting. */
+  reasoningEffort?: ReasoningEffort;
 }): string[] {
+  const effort = explicitEffort('claude', input.reasoningEffort);
+
   return [
     '-p',
     '--output-format',
@@ -54,6 +84,7 @@ export function buildClaudeReviewArgs(input: {
     // extends them. Plan mode plus the Read/Grep/Glob tool list keep it read-only.
     ...(input.readOnlyDirectories ?? []).flatMap((directory) => ['--add-dir', directory]),
     ...modelArgs(input.model),
+    ...(effort === undefined ? [] : ['--effort', effort]),
   ];
 }
 
@@ -61,7 +92,11 @@ export function buildCodexReviewArgs(input: {
   model: string;
   schemaPath: string;
   workspacePath: string;
+  /** Requested effort; absent or 'default' leaves the CLI's own setting. */
+  reasoningEffort?: ReasoningEffort;
 }): string[] {
+  const effort = explicitEffort('codex', input.reasoningEffort);
+
   return [
     // Global flag: it must precede the subcommand.
     '--ask-for-approval',
@@ -78,6 +113,8 @@ export function buildCodexReviewArgs(input: {
     '--cd',
     input.workspacePath,
     ...modelArgs(input.model),
+    // Per-run config override (TOML value); never persisted to config.toml.
+    ...(effort === undefined ? [] : ['-c', `${CODEX_EFFORT_KEY}="${effort}"`]),
     // "-" makes codex read the prompt from stdin.
     '-',
   ];
@@ -172,6 +209,11 @@ export function assertCommandPolicy(
     throw new Error(`Command policy violation: write-capable or unrestricted option "${forbidden}"`);
   }
 
+  const overrideViolation = findConfigOverrideViolation(provider, args);
+  if (overrideViolation !== undefined) {
+    throw new Error(`Command policy violation: ${overrideViolation}`);
+  }
+
   const missing = requiredControls(provider, args);
   if (missing !== undefined) {
     throw new Error(`Command policy violation: missing required read-only control ${missing}`);
@@ -185,6 +227,53 @@ export function assertCommandPolicy(
   if (args.reduce((total, argument) => total + argument.length + 3, 0) > MAX_COMMAND_LINE_LENGTH) {
     throw new Error('Command policy violation: command line is too long for Windows');
   }
+}
+
+/**
+ * Codex `-c key=value` can rewrite any config key, including `sandbox_mode` and
+ * `approval_policy`, so the only override allowed is the reasoning effort with
+ * a known value. Claude's `--effort` is likewise limited to model effort levels.
+ */
+function findConfigOverrideViolation(provider: ProviderId, args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index] as string;
+
+    if (provider === 'codex') {
+      // Accepted spellings: `-c k=v`, `--config k=v`, `--config=k=v`, `-ck=v`.
+      let value: string | undefined;
+      let isOverride = true;
+      if (argument === '-c' || argument === '--config') {
+        value = args[index + 1];
+        index += 1;
+      } else if (argument.startsWith('--config=')) {
+        value = argument.slice('--config='.length);
+      } else if (argument.startsWith('-c') && !argument.startsWith('--')) {
+        value = argument.slice(2);
+      } else {
+        isOverride = false;
+      }
+      if (isOverride && !isAllowedCodexOverride(value)) {
+        return `config override "${value ?? ''}" is not permitted`;
+      }
+      continue;
+    }
+
+    if (provider === 'claude' && (argument === '--effort' || argument.startsWith('--effort='))) {
+      const value = argument === '--effort' ? args[index + 1] : argument.slice('--effort='.length);
+      if (value === undefined || !NATIVE_REASONING_EFFORTS.claude.has(value as ReasoningEffort)) {
+        return `--effort value "${value ?? ''}" is not a supported reasoning effort`;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function isAllowedCodexOverride(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const match = /^model_reasoning_effort="([a-z]+)"$/u.exec(value);
+
+  return match !== null && NATIVE_REASONING_EFFORTS.codex.has(match[1] as ReasoningEffort);
 }
 
 function requiredControls(provider: ProviderId, args: readonly string[]): string | undefined {

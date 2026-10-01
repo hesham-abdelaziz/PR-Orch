@@ -89,6 +89,8 @@ export interface FakeProviderBehavior {
     | 'malformed-once'
     | 'auth-failure'
     | 'model-not-found'
+    | 'banner-then-error'
+    | 'ineligible-account'
     | 'leak-secret'
     | 'error-envelope'
     | 'hang'
@@ -100,6 +102,8 @@ export interface FakeProviderBehavior {
   pidFile?: string;
   secret?: string;
   badModel?: string;
+  /** Final stderr line for `banner-then-error`. */
+  fatalMessage?: string;
   help?: Partial<Record<FakeProviderName | 'codex-exec', string>>;
 }
 
