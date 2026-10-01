@@ -36,6 +36,12 @@ import { ReviewFinding, VerifierDecision } from '@pr-orchestrator/contracts';
           </li>
         }
 
+        @if (hasCoverage) {
+          <li>
+            <a href="#review-coverage" class="toc-link">Review Coverage</a>
+          </li>
+        }
+
         @if (decisions.length > 0) {
           <li>
             <a href="#rejected-audit" class="toc-link">
@@ -162,4 +168,5 @@ export class ReportTocComponent {
   @Input() decisions: VerifierDecision[] = [];
   @Input() exclusions: { path: string; reason: string }[] = [];
   @Input() warnings: string[] = [];
+  @Input() hasCoverage = false;
 }

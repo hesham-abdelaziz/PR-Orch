@@ -938,4 +938,89 @@ describe('ReportPageComponent', () => {
     expect(el.querySelector('.telemetry-strip')).toBeTruthy();
     expect(el.querySelector('app-pipeline-stage-list')).toBeTruthy();
   });
+
+  it('renders review coverage matrix below findings when coverage data is present in report', async () => {
+    const reportWithCoverage = {
+      ...mockReport,
+      coverage: [
+        {
+          reviewer: { provider: 'codex', model: 'gpt-4o' },
+          areas: [
+            {
+              area: 'sec-auth',
+              title: 'Authentication & Session Security',
+              source: 'protocol',
+              status: 'checked',
+            },
+            {
+              area: 'perf-queries',
+              title: 'Database Query Performance',
+              source: 'protocol',
+              status: 'not_applicable',
+              note: 'No DB access',
+            },
+          ],
+        },
+        {
+          reviewer: { provider: 'claude', model: 'claude-3-7-sonnet' },
+          areas: [
+            {
+              area: 'sec-auth',
+              title: 'Authentication & Session Security',
+              source: 'protocol',
+              status: 'checked',
+            },
+            {
+              area: 'perf-queries',
+              title: 'Database Query Performance',
+              source: 'protocol',
+              status: 'missing',
+            },
+          ],
+        },
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(reportWithCoverage), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    // Coverage component is rendered below findings
+    const coverageEl = el.querySelector('app-review-coverage');
+    expect(coverageEl).toBeTruthy();
+    expect(el.querySelector('#review-coverage')).toBeTruthy();
+
+    // Summary line in review coverage
+    const summaryBadge = el.querySelector('.coverage-summary-badge');
+    expect(summaryBadge?.textContent?.trim()).toBe('1 area not reviewed by at least one reviewer');
+
+    // TOC has Review Coverage link
+    const tocLink = el.querySelector('a.toc-link[href="#review-coverage"]');
+    expect(tocLink).toBeTruthy();
+    expect(tocLink?.textContent?.trim()).toBe('Review Coverage');
+  });
+
+  it('hides review coverage when coverage field is absent from report (older reports)', async () => {
+    // Default mockReport has no coverage property
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-review-coverage')).toBeNull();
+    expect(el.querySelector('#review-coverage')).toBeNull();
+    expect(el.querySelector('a.toc-link[href="#review-coverage"]')).toBeNull();
+  });
 });

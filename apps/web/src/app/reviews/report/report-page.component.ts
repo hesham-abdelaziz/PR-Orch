@@ -22,6 +22,8 @@ import { PipelineStageListComponent } from '../active-review/pipeline-stage-list
 import { ReviewerRunCardComponent } from '../active-review/reviewer-run-card.component';
 import { ReviewWarningListComponent } from '../active-review/review-warning-list.component';
 import { ActiveReviewStore, StageInfo, StageKey, StageStatus, calculateStageStatuses } from '../active-review/active-review.store';
+import { ReviewCoverageComponent } from './review-coverage.component';
+import { VerifiedReportWithCoverage } from './review-coverage.model';
 
 const SEVERITY_WEIGHT: Record<string, number> = {
   critical: 4,
@@ -40,6 +42,7 @@ const SEVERITY_WEIGHT: Record<string, number> = {
     ReportMetadataComponent,
     ReportTocComponent,
     RejectedClaimsAuditComponent,
+    ReviewCoverageComponent,
     FindingCardComponent,
     PipelineStageListComponent,
     ReviewerRunCardComponent,
@@ -333,6 +336,10 @@ const SEVERITY_WEIGHT: Record<string, number> = {
                 }
               </section>
 
+              @if (report()!.coverage && report()!.coverage!.length > 0) {
+                <app-review-coverage [coverage]="report()!.coverage!"></app-review-coverage>
+              }
+
               <app-rejected-claims-audit [decisions]="report()!.decisions"></app-rejected-claims-audit>
 
               @if (report()!.exclusions.length > 0) {
@@ -370,6 +377,7 @@ const SEVERITY_WEIGHT: Record<string, number> = {
                 [decisions]="report()!.decisions"
                 [exclusions]="report()!.exclusions"
                 [warnings]="report()!.warnings"
+                [hasCoverage]="hasCoverage()"
               ></app-report-toc>
             </aside>
           </div>
@@ -833,7 +841,11 @@ export class ReportPageComponent implements OnInit, OnDestroy {
 
   private readonly activityStore = inject(ActiveReviewStore);
   readonly job = this.activityStore.job;
-  readonly report = signal<VerifiedReport | null>(null);
+  readonly report = signal<VerifiedReportWithCoverage | null>(null);
+  readonly hasCoverage = computed(() => {
+    const cov = this.report()?.coverage;
+    return !!(cov && cov.length > 0 && cov.some((r) => r.areas && r.areas.length > 0));
+  });
   readonly loading = signal<boolean>(false);
   readonly error = signal<string | null>(null);
   readonly errorType = signal<'not_found' | 'network' | 'auth' | 'data_consistency' | 'generic' | null>(null);

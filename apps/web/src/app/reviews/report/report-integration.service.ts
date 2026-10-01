@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
-import { VerifiedReport, VerifiedReportSchema } from '@pr-orchestrator/contracts';
+import { VerifiedReportSchema } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../../core/api/api-client.service';
+import { VerifiedReportWithCoverage } from './review-coverage.model';
 
 /**
  * Typed integration adapter for structured report retrieval.
@@ -18,11 +19,11 @@ import { ApiClientService } from '../../core/api/api-client.service';
 export class ReportIntegrationService {
   private readonly apiClient = inject(ApiClientService);
 
-  async getStructuredReport(reviewId: string): Promise<VerifiedReport> {
-    return this.apiClient.request<VerifiedReport>({
+  async getStructuredReport(reviewId: string): Promise<VerifiedReportWithCoverage> {
+    return this.apiClient.request<VerifiedReportWithCoverage>({
       method: 'GET',
       path: `/api/reviews/${reviewId}/report`,
-      schema: VerifiedReportSchema,
+      schema: VerifiedReportSchema.passthrough(),
     });
   }
 }
