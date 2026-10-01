@@ -397,4 +397,413 @@ describe('ActiveReviewStore', () => {
       'Failed during reviewing: All reviewers failed.',
     ]);
   });
+
+  describe('Live activity & Verifier integration', () => {
+    it('does not regress current activity when an older snapshot entry is replayed', () => {
+      const run = mockActiveJob.reviewers[0];
+      const older = { id: `${run.id}:1`, runId: run.id, seq: 1, at: '2026-10-01T12:00:00.000Z', kind: 'provider' as const, action: 'thinking' as const };
+      const newer = { ...older, id: `${run.id}:2`, seq: 2, at: '2026-10-01T12:00:10.000Z', action: 'writing_answer' as const };
+      store.job.set({ ...mockActiveJob, reviewers: [{ ...run, activity: { visibility: 'full', recent: [older, newer], current: newer, lastActivityAt: newer.at, lastHeartbeatAt: null, total: 2 } }] });
+      store.applyEvent({ reviewId: mockActiveJob.id, sequence: 10, emittedAt: newer.at, type: 'run.activity', payload: { runId: run.id, role: 'reviewer', activity: older, visibility: 'full', total: 1, lastActivityAt: older.at } });
+      expect(store.job()?.reviewers[0].activity?.current).toEqual(newer);
+      expect(store.job()?.reviewers[0].activity?.lastActivityAt).toBe(newer.at);
+      expect(store.job()?.reviewers[0].activity?.recent).toEqual([older, newer]);
+    });
+
+    it('coalesces full log requests and allows reloading after a reconnect snapshot', async () => {
+      store.job.set(mockActiveJob);
+      apiClientMock.request.mockResolvedValue({ runId: mockActiveJob.reviewers[0].id, items: [], total: 0 });
+      await store.loadRunActivity(mockActiveJob.reviewers[0].id);
+      await store.loadRunActivity(mockActiveJob.reviewers[0].id);
+      expect(apiClientMock.request).toHaveBeenCalledTimes(1);
+      store.applyEvent({ reviewId: mockActiveJob.id, sequence: 10, emittedAt: '2026-10-01T12:00:00.000Z', type: 'job.snapshot', payload: { job: mockActiveJob } });
+      await store.loadRunActivity(mockActiveJob.reviewers[0].id);
+      expect(apiClientMock.request).toHaveBeenCalledTimes(2);
+    });
+
+    it('allows retrying failed full log requests', async () => {
+      store.job.set(mockActiveJob);
+      apiClientMock.request.mockRejectedValueOnce(new Error('offline'));
+      await store.loadRunActivity(mockActiveJob.reviewers[0].id);
+      apiClientMock.request.mockResolvedValueOnce({ runId: mockActiveJob.reviewers[0].id, items: [], total: 0 });
+      await store.loadRunActivity(mockActiveJob.reviewers[0].id);
+      expect(apiClientMock.request).toHaveBeenCalledTimes(2);
+    });
+    it('handles snapshot with activity, then run.activity (including a duplicate id): no duplicate rows', async () => {
+      const jobWithActivity: ReviewJob = {
+        ...mockActiveJob,
+        reviewers: [
+          {
+            ...mockActiveJob.reviewers[0],
+            activity: {
+              visibility: 'full',
+              recent: [
+                {
+                  id: 'rev-run-1:1',
+                  runId: '123e4567-e89b-12d3-a456-426614174001',
+                  seq: 1,
+                  at: '2026-10-01T12:00:00.000Z',
+                  kind: 'lifecycle',
+                  action: 'attempt_started',
+                  attempt: 1,
+                },
+                {
+                  id: 'rev-run-1:2',
+                  runId: '123e4567-e89b-12d3-a456-426614174001',
+                  seq: 2,
+                  at: '2026-10-01T12:00:05.000Z',
+                  kind: 'provider',
+                  action: 'reading_file',
+                  target: { path: 'src/index.ts', startLine: 1, endLine: 20 },
+                },
+              ],
+              current: {
+                id: 'rev-run-1:2',
+                runId: '123e4567-e89b-12d3-a456-426614174001',
+                seq: 2,
+                at: '2026-10-01T12:00:05.000Z',
+                kind: 'provider',
+                action: 'reading_file',
+                target: { path: 'src/index.ts', startLine: 1, endLine: 20 },
+              },
+              lastActivityAt: '2026-10-01T12:00:05.000Z',
+              lastHeartbeatAt: null,
+              total: 2,
+            },
+          },
+          mockActiveJob.reviewers[1],
+        ],
+      };
+
+      apiClientMock.request.mockResolvedValueOnce(jobWithActivity);
+      await store.loadJob();
+
+      expect(store.job()?.reviewers[0].activity?.recent).toHaveLength(2);
+
+      // 1. Emit duplicate entry (id: 'rev-run-1:2')
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 4,
+        emittedAt: new Date().toISOString(),
+        type: 'run.activity',
+        payload: {
+          runId: 'rev-run-1',
+          role: 'reviewer',
+          activity: {
+            id: 'rev-run-1:2',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 2,
+            at: '2026-10-01T12:00:05.000Z',
+            kind: 'provider',
+            action: 'reading_file',
+            target: { path: 'src/index.ts', startLine: 1, endLine: 20 },
+          },
+          visibility: 'full',
+          total: 2,
+          lastActivityAt: '2026-10-01T12:00:05.000Z',
+        },
+      });
+
+      // No duplicate rows added
+      expect(store.job()?.reviewers[0].activity?.recent).toHaveLength(2);
+
+      // 2. Emit new entry (id: 'rev-run-1:3')
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 5,
+        emittedAt: new Date().toISOString(),
+        type: 'run.activity',
+        payload: {
+          runId: 'rev-run-1',
+          role: 'reviewer',
+          activity: {
+            id: 'rev-run-1:3',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 3,
+            at: '2026-10-01T12:00:10.000Z',
+            kind: 'provider',
+            action: 'running_command',
+          },
+          visibility: 'full',
+          total: 3,
+          lastActivityAt: '2026-10-01T12:00:10.000Z',
+        },
+      });
+
+      const updatedSummary = store.job()?.reviewers[0].activity;
+      expect(updatedSummary?.recent).toHaveLength(3);
+      expect(updatedSummary?.recent[2].id).toBe('rev-run-1:3');
+      expect(updatedSummary?.current?.action).toBe('running_command');
+      expect(updatedSummary?.lastActivityAt).toBe('2026-10-01T12:00:10.000Z');
+      expect(updatedSummary?.total).toBe(3);
+    });
+
+    it('run.heartbeat updates only lastHeartbeatAt and never touches lastActivityAt or the log', async () => {
+      const jobWithActivity: ReviewJob = {
+        ...mockActiveJob,
+        reviewers: [
+          {
+            ...mockActiveJob.reviewers[0],
+            activity: {
+              visibility: 'full',
+              recent: [
+                {
+                  id: 'rev-run-1:1',
+                  runId: '123e4567-e89b-12d3-a456-426614174001',
+                  seq: 1,
+                  at: '2026-10-01T12:00:00.000Z',
+                  kind: 'lifecycle',
+                  action: 'attempt_started',
+                  attempt: 1,
+                },
+              ],
+              current: null,
+              lastActivityAt: '2026-10-01T12:00:00.000Z',
+              lastHeartbeatAt: null,
+              total: 1,
+            },
+          },
+        ],
+      };
+
+      apiClientMock.request.mockResolvedValueOnce(jobWithActivity);
+      await store.loadJob();
+
+      const hbTime = '2026-10-01T12:00:15.000Z';
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 6,
+        emittedAt: new Date().toISOString(),
+        type: 'run.heartbeat',
+        payload: {
+          runId: 'rev-run-1',
+          role: 'reviewer',
+          at: hbTime,
+        },
+      });
+
+      const act = store.job()?.reviewers[0].activity;
+      expect(act?.lastHeartbeatAt).toBe(hbTime);
+      expect(act?.lastActivityAt).toBe('2026-10-01T12:00:00.000Z');
+      expect(act?.recent).toHaveLength(1);
+    });
+
+    it('a verifier reviewer.state_changed updates job.verifier and clears heartbeat on leaving running', async () => {
+      const jobWithVerifier: ReviewJob = {
+        ...mockActiveJob,
+        verifier: {
+          id: 'verifier-run-1',
+          selection: { provider: 'claude', model: 'claude-3-7-sonnet' },
+          state: 'running',
+          startedAt: '2026-10-01T12:01:00.000Z',
+          completedAt: null,
+          warning: null,
+          activity: {
+            visibility: 'full',
+            recent: [],
+            current: null,
+            lastActivityAt: '2026-10-01T12:01:05.000Z',
+            lastHeartbeatAt: '2026-10-01T12:01:10.000Z',
+            total: 1,
+          },
+        },
+      };
+
+      apiClientMock.request.mockResolvedValueOnce(jobWithVerifier);
+      await store.loadJob();
+
+      expect(store.job()?.verifier?.state).toBe('running');
+      expect(store.job()?.verifier?.activity?.lastHeartbeatAt).toBe('2026-10-01T12:01:10.000Z');
+
+      const completedAt = '2026-10-01T12:03:00.000Z';
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 7,
+        emittedAt: new Date().toISOString(),
+        type: 'reviewer.state_changed',
+        payload: {
+          runId: 'verifier-run-1',
+          role: 'verifier',
+          reviewer: { provider: 'claude', model: 'claude-3-7-sonnet' },
+          state: 'completed',
+          completedAt,
+        },
+      });
+
+      const verifier = store.job()?.verifier;
+      expect(verifier?.state).toBe('completed');
+      expect(verifier?.completedAt).toBe(completedAt);
+      // Cleared on leaving running state
+      expect(verifier?.activity?.lastHeartbeatAt).toBeNull();
+    });
+
+    it('a reconnect snapshot replaces summaries', async () => {
+      await store.loadJob();
+
+      // Accumulate live event
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 1,
+        emittedAt: new Date().toISOString(),
+        type: 'run.activity',
+        payload: {
+          runId: 'rev-run-1',
+          role: 'reviewer',
+          activity: {
+            id: 'rev-run-1:1',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 1,
+            at: '2026-10-01T12:00:00.000Z',
+            kind: 'provider',
+            action: 'thinking',
+          },
+          visibility: 'full',
+          total: 1,
+          lastActivityAt: '2026-10-01T12:00:00.000Z',
+        },
+      });
+
+      expect(store.job()?.reviewers[0].activity?.recent).toHaveLength(1);
+
+      // Reconnect receives clean snapshot
+      const freshJobSnapshot: ReviewJob = {
+        ...mockActiveJob,
+        reviewers: [
+          {
+            ...mockActiveJob.reviewers[0],
+            activity: {
+              visibility: 'partial',
+              recent: [
+                {
+                  id: 'rev-run-1:10',
+                  runId: '123e4567-e89b-12d3-a456-426614174001',
+                  seq: 10,
+                  at: '2026-10-01T12:10:00.000Z',
+                  kind: 'provider',
+                  action: 'searching',
+                },
+              ],
+              current: null,
+              lastActivityAt: '2026-10-01T12:10:00.000Z',
+              lastHeartbeatAt: null,
+              total: 10,
+            },
+          },
+          mockActiveJob.reviewers[1],
+        ],
+      };
+
+      eventsSubject.next({
+        reviewId: mockActiveJob.id,
+        sequence: 2,
+        emittedAt: new Date().toISOString(),
+        type: 'job.snapshot',
+        payload: { job: freshJobSnapshot },
+      });
+
+      const replacedAct = store.job()?.reviewers[0].activity;
+      expect(replacedAct?.visibility).toBe('partial');
+      expect(replacedAct?.total).toBe(10);
+      expect(replacedAct?.recent).toHaveLength(1);
+      expect(replacedAct?.recent[0].id).toBe('rev-run-1:10');
+    });
+
+    it('legacy jobs without verifier/activity still render', async () => {
+      const legacyJob: ReviewJob = {
+        ...mockActiveJob,
+        verifier: undefined,
+        reviewers: [
+          {
+            id: 'legacy-1',
+            selection: { provider: 'codex', model: 'gpt-4o' },
+            state: 'completed',
+            startedAt: '2026-09-01T10:00:00.000Z',
+            completedAt: '2026-09-01T10:01:00.000Z',
+            warning: null,
+          },
+        ],
+      };
+
+      apiClientMock.request.mockResolvedValueOnce(legacyJob);
+      await store.loadJob();
+
+      expect(store.job()).toBeTruthy();
+      expect(store.job()?.verifier).toBeUndefined();
+      expect(store.job()?.reviewers[0].activity).toBeUndefined();
+    });
+
+    it('fetches full activity log and merges items into store when loadRunActivity is called', async () => {
+      const job: ReviewJob = {
+        ...mockActiveJob,
+        reviewers: [
+          {
+            ...mockActiveJob.reviewers[0],
+            activity: {
+              visibility: 'full',
+              recent: [
+                {
+                  id: 'rev-run-1:3',
+                  runId: '123e4567-e89b-12d3-a456-426614174001',
+                  seq: 3,
+                  at: '2026-10-01T12:00:30.000Z',
+                  kind: 'provider',
+                  action: 'thinking',
+                },
+              ],
+              current: null,
+              lastActivityAt: '2026-10-01T12:00:30.000Z',
+              lastHeartbeatAt: null,
+              total: 5,
+            },
+          },
+        ],
+      };
+
+      apiClientMock.request.mockResolvedValueOnce(job);
+      await store.loadJob();
+
+      // Mock full activity log response
+      apiClientMock.request.mockResolvedValueOnce({
+        runId: '123e4567-e89b-12d3-a456-426614174001',
+        items: [
+          {
+            id: 'rev-run-1:1',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 1,
+            at: '2026-10-01T12:00:00.000Z',
+            kind: 'lifecycle',
+            action: 'attempt_started',
+            attempt: 1,
+          },
+          {
+            id: 'rev-run-1:2',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 2,
+            at: '2026-10-01T12:00:10.000Z',
+            kind: 'provider',
+            action: 'reading_file',
+            target: { path: 'src/main.ts' },
+          },
+          {
+            id: 'rev-run-1:3',
+            runId: '123e4567-e89b-12d3-a456-426614174001',
+            seq: 3,
+            at: '2026-10-01T12:00:30.000Z',
+            kind: 'provider',
+            action: 'thinking',
+          },
+        ],
+        total: 5,
+      });
+
+      await store.loadRunActivity('rev-run-1');
+
+      const act = store.job()?.reviewers[0].activity;
+      expect(act?.recent).toHaveLength(3);
+      expect(act?.recent[0].seq).toBe(1);
+      expect(act?.recent[1].seq).toBe(2);
+      expect(act?.recent[2].seq).toBe(3);
+    });
+  });
+
 });

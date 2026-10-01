@@ -1,14 +1,20 @@
-import { Injectable, computed, inject, signal } from '@angular/core';
+import { Injectable, OnDestroy, computed, inject, signal } from '@angular/core';
 import { Subscription } from 'rxjs';
 import {
+  ActivityVisibility,
   JobState,
+  RUN_ACTIVITY_RETAINED_PER_RUN,
   ReviewEvent,
   ReviewJob,
   ReviewJobSchema,
+  RunActivity,
+  RunActivityLogSchema,
   RunState,
 } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../../core/api/api-client.service';
 import { ReviewEventsService } from '../../core/api/review-events.service';
+
+export type ReviewerRun = ReviewJob['reviewers'][number];
 
 export type StageKey =
   | 'validate'
@@ -133,16 +139,13 @@ export function calculateStageStatuses(job: ReviewJob | null, warnings: string[]
         return 'not_run';
       }
 
-      // If no Failed during warning exists (older jobs), fall back to marking only REVIEWERS failed
-      // when every reviewer run failed. Otherwise show unknown. Never show all stages failed.
       if (allReviewersFailed()) {
-        const reviewersIndex = STAGE_KEYS.indexOf('reviewers');
+        const failedIndex = STAGE_KEYS.indexOf('reviewers');
         const targetIndex = STAGE_KEYS.indexOf(target);
-
-        if (targetIndex < reviewersIndex) {
+        if (targetIndex < failedIndex) {
           return 'completed';
         }
-        if (targetIndex === reviewersIndex) {
+        if (targetIndex === failedIndex) {
           return 'failed';
         }
         return 'not_run';
@@ -154,17 +157,11 @@ export function calculateStageStatuses(job: ReviewJob | null, warnings: string[]
     // Cancelled jobs
     if (state === 'cancelled') {
       let inProgressStage: StageKey = 'reviewers';
+      const reviewers = job?.reviewers ?? [];
 
-      for (let i = allWarnings.length - 1; i >= 0; i--) {
-        const match = allWarnings[i].match(/(?:Cancelled|Failed) during (\w+)(?::\s*([\s\S]*))?/i);
-        if (match) {
-          inProgressStage = mapBackendStageToStageKey(match[1].toLowerCase(), match[2] ?? '');
-          break;
-        }
-      }
-
-      if (!allWarnings.some((w) => /(?:Cancelled|Failed) during/i.test(w))) {
-        const reviewers = job?.reviewers ?? [];
+      if ((job as any)?.inProgressStage) {
+        inProgressStage = mapBackendStageToStageKey(String((job as any).inProgressStage), '');
+      } else {
         if (reviewers.length > 0 && reviewers.every((r) => r.state === 'completed')) {
           inProgressStage = 'verify';
         } else if (reviewers.length > 0) {
@@ -228,10 +225,93 @@ export function calculateStageStatuses(job: ReviewJob | null, warnings: string[]
   ];
 }
 
+function updateRunState(
+  run: ReviewerRun,
+  payload: {
+    state: RunState;
+    startedAt?: string | null;
+    completedAt?: string | null;
+  },
+): ReviewerRun {
+  const isLeavingRunning = payload.state !== 'running';
+  return {
+    ...run,
+    state: payload.state,
+    startedAt: payload.startedAt !== undefined ? payload.startedAt : run.startedAt,
+    completedAt: payload.completedAt !== undefined ? payload.completedAt : run.completedAt,
+    activity: run.activity
+      ? {
+          ...run.activity,
+          lastHeartbeatAt: isLeavingRunning ? null : run.activity.lastHeartbeatAt,
+        }
+      : undefined,
+  };
+}
+
+function applyActivityToRun(
+  run: ReviewerRun,
+  payload: {
+    activity: RunActivity;
+    visibility: ActivityVisibility | null;
+    total: number;
+    lastActivityAt: string | null;
+  },
+): ReviewerRun {
+  const existingSummary = run.activity;
+  const existingRecent = existingSummary?.recent ?? [];
+
+  const exists = existingRecent.some((entry) => entry.id === payload.activity.id);
+  const updatedRecent = exists
+    ? existingRecent
+    : [...existingRecent, payload.activity]
+        .sort((a, b) => a.seq - b.seq)
+        .slice(-RUN_ACTIVITY_RETAINED_PER_RUN);
+
+  const updatedCurrent =
+    payload.activity.kind === 'provider' && payload.activity.seq > (existingSummary?.current?.seq ?? 0)
+      ? payload.activity
+      : existingSummary?.current ?? null;
+
+  return {
+    ...run,
+    activity: {
+      visibility: payload.visibility,
+      recent: updatedRecent,
+      current: updatedCurrent,
+      lastActivityAt: [payload.lastActivityAt, existingSummary?.lastActivityAt].filter((at): at is string => !!at).sort().at(-1) ?? null,
+      lastHeartbeatAt: existingSummary?.lastHeartbeatAt ?? null,
+      total: Math.max(payload.total, existingSummary?.total ?? 0, updatedRecent.length),
+    },
+  };
+}
+
+function applyHeartbeatToRun(run: ReviewerRun, at: string): ReviewerRun {
+  if (!run.activity) {
+    return {
+      ...run,
+      activity: {
+        visibility: null,
+        recent: [],
+        current: null,
+        lastActivityAt: null,
+        lastHeartbeatAt: at,
+        total: 0,
+      },
+    };
+  }
+  return {
+    ...run,
+    activity: {
+      ...run.activity,
+      lastHeartbeatAt: at,
+    },
+  };
+}
+
 @Injectable({
   providedIn: 'root',
 })
-export class ActiveReviewStore {
+export class ActiveReviewStore implements OnDestroy {
   private readonly apiClient = inject(ApiClientService);
   private readonly eventsService = inject(ReviewEventsService);
 
@@ -240,8 +320,12 @@ export class ActiveReviewStore {
   readonly cancelling = signal<boolean>(false);
   readonly error = signal<string | null>(null);
   readonly warnings = signal<string[]>([]);
+  readonly now = signal<number>(Date.now());
 
   private eventSubscription: Subscription | null = null;
+  private tickerInterval: ReturnType<typeof setInterval> | null = null;
+  private activityRequests = new Set<string>();
+  private activitySnapshotVersion = 0;
 
   readonly isTerminal = computed(() => {
     const s = this.job()?.state;
@@ -291,6 +375,29 @@ export class ActiveReviewStore {
     return calculateStageStatuses(this.job(), this.warnings());
   });
 
+  startTicker(): void {
+    if (!this.tickerInterval) {
+      this.now.set(Date.now());
+      this.tickerInterval = setInterval(() => {
+        this.now.set(Date.now());
+      }, 1000);
+    }
+  }
+
+  stopTicker(): void {
+    if (this.tickerInterval) {
+      clearInterval(this.tickerInterval);
+      this.tickerInterval = null;
+    }
+  }
+
+  replaceSnapshot(job: ReviewJob): void {
+    this.activityRequests.clear();
+    this.activitySnapshotVersion++;
+    this.job.set(job);
+    this.warnings.set([...job.warnings]);
+  }
+
   async loadJob(reviewId?: string): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
@@ -309,8 +416,8 @@ export class ActiveReviewStore {
         return;
       }
 
-      this.job.set(data);
-      this.warnings.set([...data.warnings]);
+      this.replaceSnapshot(data);
+      this.startTicker();
 
       // Connect to SSE stream if not terminal
       if (!['completed', 'failed', 'cancelled'].includes(data.state)) {
@@ -320,6 +427,66 @@ export class ActiveReviewStore {
       this.error.set(err instanceof Error ? err.message : 'Failed to load review');
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  async loadRunActivity(runId: string): Promise<void> {
+    const currentJob = this.job();
+    if (!currentJob) return;
+    const key = `${currentJob.id}:${runId}`;
+    if (this.activityRequests.has(key)) return;
+    this.activityRequests.add(key);
+    const version = this.activitySnapshotVersion;
+
+    try {
+      const data = await this.apiClient.request({
+        method: 'GET',
+        path: `/api/reviews/${currentJob.id}/runs/${runId}/activity`,
+        schema: RunActivityLogSchema,
+      });
+      if (version !== this.activitySnapshotVersion || this.job()?.id !== currentJob.id) return;
+
+      this.job.update((job) => {
+        if (!job) return null;
+
+        const mergeIntoRun = (run: ReviewerRun): ReviewerRun => {
+          if (run.id !== runId) return run;
+
+          const existing = run.activity?.recent ?? [];
+          const map = new Map<string, RunActivity>();
+          for (const item of existing) map.set(item.id, item);
+          for (const item of data.items) map.set(item.id, item);
+
+          const mergedRecent = Array.from(map.values())
+            .sort((a, b) => a.seq - b.seq)
+            .slice(-RUN_ACTIVITY_RETAINED_PER_RUN);
+
+          const currentProvider =
+            [...mergedRecent].reverse().find((e) => e.kind === 'provider') ??
+            run.activity?.current ??
+            null;
+
+          return {
+            ...run,
+            activity: {
+              visibility: run.activity?.visibility ?? null,
+              recent: mergedRecent,
+              current: currentProvider,
+              lastActivityAt: run.activity?.lastActivityAt ?? currentProvider?.at ?? null,
+              lastHeartbeatAt: run.activity?.lastHeartbeatAt ?? null,
+              total: Math.max(data.total, run.activity?.total ?? 0, mergedRecent.length),
+            },
+          };
+        };
+
+        return {
+          ...job,
+          reviewers: job.reviewers.map(mergeIntoRun),
+          verifier: job.verifier ? mergeIntoRun(job.verifier) : undefined,
+        };
+      });
+    } catch (err: unknown) {
+      if (version === this.activitySnapshotVersion) this.activityRequests.delete(key);
     }
   }
 
@@ -341,8 +508,7 @@ export class ActiveReviewStore {
   applyEvent(event: ReviewEvent): void {
     switch (event.type) {
       case 'job.snapshot':
-        this.job.set(event.payload.job);
-        this.warnings.set([...event.payload.job.warnings]);
+        this.replaceSnapshot(event.payload.job);
         break;
 
       case 'job.state_changed':
@@ -361,18 +527,71 @@ export class ActiveReviewStore {
       case 'reviewer.state_changed':
         this.job.update((current) => {
           if (!current) return null;
+
+          const isVerifierMatch = current.verifier && current.verifier.id === event.payload.runId;
+          const updatedVerifier = isVerifierMatch
+            ? updateRunState(current.verifier!, event.payload)
+            : current.verifier;
+
           const updatedReviewers = current.reviewers.map((r) => {
             if (r.id === event.payload.runId) {
-              return {
-                ...r,
-                state: event.payload.state as RunState,
-              };
+              return updateRunState(r, event.payload);
             }
             return r;
           });
+
           return {
             ...current,
             reviewers: updatedReviewers,
+            verifier: updatedVerifier,
+          };
+        });
+        break;
+
+      case 'run.activity':
+        this.job.update((current) => {
+          if (!current) return null;
+
+          const isVerifierMatch = current.verifier && current.verifier.id === event.payload.runId;
+          const updatedVerifier = isVerifierMatch
+            ? applyActivityToRun(current.verifier!, event.payload)
+            : current.verifier;
+
+          const updatedReviewers = current.reviewers.map((r) => {
+            if (r.id === event.payload.runId) {
+              return applyActivityToRun(r, event.payload);
+            }
+            return r;
+          });
+
+          return {
+            ...current,
+            reviewers: updatedReviewers,
+            verifier: updatedVerifier,
+          };
+        });
+        break;
+
+      case 'run.heartbeat':
+        this.job.update((current) => {
+          if (!current) return null;
+
+          const isVerifierMatch = current.verifier && current.verifier.id === event.payload.runId;
+          const updatedVerifier = isVerifierMatch
+            ? applyHeartbeatToRun(current.verifier!, event.payload.at)
+            : current.verifier;
+
+          const updatedReviewers = current.reviewers.map((r) => {
+            if (r.id === event.payload.runId) {
+              return applyHeartbeatToRun(r, event.payload.at);
+            }
+            return r;
+          });
+
+          return {
+            ...current,
+            reviewers: updatedReviewers,
+            verifier: updatedVerifier,
           };
         });
         break;
@@ -402,10 +621,15 @@ export class ActiveReviewStore {
   }
 
   disconnect(): void {
+    this.stopTicker();
     if (this.eventSubscription) {
       this.eventSubscription.unsubscribe();
       this.eventSubscription = null;
     }
     this.eventsService.disconnect();
+  }
+
+  ngOnDestroy(): void {
+    this.disconnect();
   }
 }

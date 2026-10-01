@@ -8,7 +8,6 @@ import {
   ReviewFinding,
   ReviewJob,
   ReviewJobSchema,
-  RunState,
   VerifiedReport,
 } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../../core/api/api-client.service';
@@ -22,7 +21,7 @@ import { FindingCardComponent } from './finding-card.component';
 import { PipelineStageListComponent } from '../active-review/pipeline-stage-list.component';
 import { ReviewerRunCardComponent } from '../active-review/reviewer-run-card.component';
 import { ReviewWarningListComponent } from '../active-review/review-warning-list.component';
-import { StageInfo, StageKey, StageStatus, calculateStageStatuses } from '../active-review/active-review.store';
+import { ActiveReviewStore, StageInfo, StageKey, StageStatus, calculateStageStatuses } from '../active-review/active-review.store';
 
 const SEVERITY_WEIGHT: Record<string, number> = {
   critical: 4,
@@ -34,6 +33,7 @@ const SEVERITY_WEIGHT: Record<string, number> = {
 @Component({
   selector: 'app-report-page',
   standalone: true,
+  providers: [ActiveReviewStore],
   imports: [
     CommonModule,
     RouterLink,
@@ -159,6 +159,22 @@ const SEVERITY_WEIGHT: Record<string, number> = {
           </div>
         }
 
+        @if (job()!.verifier; as verifier) {
+          <section class="reviewers-section" aria-label="Main verifier activity">
+            <h2 class="section-title">Main Verifier</h2>
+            <app-reviewer-run-card [run]="verifier" [isVerifier]="true" />
+          </section>
+        }
+        @if (job()!.state === 'completed' || job()!.state === 'cancelled') {
+          <section class="reviewers-section" aria-label="Reviewer activity">
+            <h2 class="section-title">Reviewer Activity</h2>
+            <div class="reviewers-grid">
+              @for (run of job()!.reviewers; track run.id) {
+                <app-reviewer-run-card [run]="run" />
+              }
+            </div>
+          </section>
+        }
         <!-- CASE 1: IN-PROGRESS ACTIVE PIPELINE -->
         @if (isInProgress()) {
           <div class="telemetry-strip font-mono">
@@ -815,7 +831,8 @@ export class ReportPageComponent implements OnInit, OnDestroy {
   private readonly eventsService = inject(ReviewEventsService);
   private readonly router = inject(Router);
 
-  readonly job = signal<ReviewJob | null>(null);
+  private readonly activityStore = inject(ActiveReviewStore);
+  readonly job = this.activityStore.job;
   readonly report = signal<VerifiedReport | null>(null);
   readonly loading = signal<boolean>(false);
   readonly error = signal<string | null>(null);
@@ -912,6 +929,7 @@ export class ReportPageComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.activityStore.stopTicker();
     if (this.routeSubscription) {
       this.routeSubscription.unsubscribe();
       this.routeSubscription = null;
@@ -953,7 +971,8 @@ export class ReportPageComponent implements OnInit, OnDestroy {
 
       if (requestId !== this.currentRequestId) return;
 
-      this.job.set(jobData);
+      this.activityStore.replaceSnapshot(jobData);
+      this.activityStore.startTicker();
 
       // 2. State-dependent loading
       if (['queued', 'preparing', 'reviewing', 'verifying', 'rendering', 'cancelling'].includes(jobData.state)) {
@@ -1076,7 +1095,7 @@ export class ReportPageComponent implements OnInit, OnDestroy {
 
     switch (event.type) {
       case 'job.snapshot':
-        this.job.set(event.payload.job);
+        this.activityStore.replaceSnapshot(event.payload.job);
         if (event.payload.job.state === 'completed') {
           this.disconnectEvents();
           this.loadReportData(event.payload.job.id);
@@ -1096,15 +1115,9 @@ export class ReportPageComponent implements OnInit, OnDestroy {
         break;
 
       case 'reviewer.state_changed':
-        this.job.update((current) => {
-          if (!current) return null;
-          return {
-            ...current,
-            reviewers: current.reviewers.map((r) =>
-              r.id === event.payload.runId ? { ...r, state: event.payload.state as RunState } : r,
-            ),
-          };
-        });
+      case 'run.activity':
+      case 'run.heartbeat':
+        this.activityStore.applyEvent(event);
         break;
 
       case 'job.warning':

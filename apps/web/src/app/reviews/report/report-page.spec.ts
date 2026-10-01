@@ -187,6 +187,25 @@ describe('ReportPageComponent', () => {
     expect(el.textContent).toContain('claude-3-7-sonnet');
   });
 
+  it.each(['completed', 'cancelled', 'failed'] as const)('keeps reviewer and verifier activity accessible for %s reviews', async state => {
+    const run = mockJob.reviewers[0];
+    const item = { id: `${run.id}:2`, runId: run.id, seq: 2, at: '2026-09-30T10:00:20.000Z', kind: 'provider' as const, action: 'thinking' as const };
+    component.job.set({ ...mockJob, state, reviewers: [{ ...run, activity: { visibility: 'full', recent: [item], current: item, lastActivityAt: item.at, lastHeartbeatAt: null, total: 2 } }], verifier: { ...mockJob.reviewers[1], selection: mockJob.main } });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('app-reviewer-run-card')).toHaveLength(2);
+    const older = { ...item, id: `${run.id}:1`, seq: 1, at: '2026-09-30T10:00:10.000Z' };
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => String(input).endsWith('/activity')
+      ? Promise.resolve(new Response(JSON.stringify({ runId: run.id, items: [older, item], total: 2 }), { status: 200 }))
+      : defaultFetchHandler(input));
+    const details = fixture.nativeElement.querySelector('app-run-activity-log details') as HTMLDetailsElement;
+    expect(details).toBeTruthy();
+    details.open = true;
+    details.dispatchEvent(new Event('toggle'));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(component.job()?.reviewers[0].activity?.recent).toEqual([older, item]);
+  });
+
   it('renders verified findings ordered by severity with location and fixes', () => {
     const el = fixture.nativeElement as HTMLElement;
     const findings = el.querySelectorAll('.finding-card');

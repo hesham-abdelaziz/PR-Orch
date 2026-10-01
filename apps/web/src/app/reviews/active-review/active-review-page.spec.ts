@@ -284,4 +284,29 @@ describe('ActiveReviewPageComponent', () => {
     expect(noticesRegion?.textContent).toContain(noticeWarning);
     expect(noticesRegion?.textContent).not.toContain('Failed during reviewing');
   });
+
+  it('renders main verifier model unit card when job.verifier is present', async () => {
+    const jobWithVerifier: ReviewJob = {
+      ...mockActiveJob,
+      verifier: {
+        id: 'verifier-card-test',
+        selection: { provider: 'claude', model: 'claude-3-7-sonnet' },
+        state: 'running',
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        warning: null,
+      },
+    };
+
+    apiClientMock.request.mockResolvedValueOnce(jobWithVerifier);
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const verifierSection = fixture.nativeElement.querySelector('.verifier-section');
+    expect(verifierSection).toBeTruthy();
+    expect(verifierSection?.textContent).toContain('Main Verifier Model');
+    expect(verifierSection?.textContent).toContain('claude-3-7-sonnet');
+    expect(verifierSection?.textContent).toContain('Main Verifier Unit');
+  });
+
 });

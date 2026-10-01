@@ -1,10 +1,10 @@
-﻿import { Component, OnDestroy, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { Component, OnInit, OnDestroy, inject, signal, computed, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router, RouterModule } from '@angular/router';
 import { ActiveReviewStore } from './active-review.store';
 import { PipelineStageListComponent } from './pipeline-stage-list.component';
-import { ReviewerRunCardComponent } from './reviewer-run-card.component';
 import { ReviewWarningListComponent } from './review-warning-list.component';
+import { ReviewerRunCardComponent } from './reviewer-run-card.component';
 
 @Component({
   selector: 'app-active-review-page',
@@ -13,39 +13,41 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
     CommonModule,
     RouterModule,
     PipelineStageListComponent,
-    ReviewerRunCardComponent,
     ReviewWarningListComponent,
+    ReviewerRunCardComponent,
   ],
   template: `
     <div class="active-review-page">
       @if (store.loading()) {
-        <div class="loading-state font-mono">Loading active review pipeline...</div>
+        <div class="loading-state">
+          <div class="pulse-dot"></div>
+          <span class="font-mono">Connecting to review stream...</span>
+        </div>
       } @else if (!store.job()) {
         <div class="empty-state">
-          <div class="empty-glyph">⊘</div>
+          <div class="empty-glyph font-mono">◈</div>
           <h2>No Active Review In Progress</h2>
-          <p>There are no reviews currently executing in the local orchestrator.</p>
-          <a routerLink="/reviews/new" class="btn-primary">Start New PR Review</a>
+          <p>There are no reviews currently executing in the local sandbox.</p>
+          <a routerLink="/reviews/new" class="btn btn-primary font-mono">Start New PR Review</a>
         </div>
       } @else {
-        <!-- Operational Header -->
-        <div class="page-header">
+        <!-- Page Header -->
+        <header class="page-header">
           <div class="header-left">
-            <div class="breadcrumbs font-mono">
-              <a routerLink="/reviews/history">reviews</a>
+            <div class="breadcrumbs">
+              <a routerLink="/reviews/history">Reviews</a>
               <span>/</span>
-              <span class="active">PR #{{ store.job()!.pullRequest.pullRequestId }}</span>
-              <span class="job-badge font-mono">#job-{{ store.job()!.id.slice(0, 8) }}</span>
+              <span class="active font-mono">#{{ store.job()!.pullRequest.pullRequestId }}</span>
+              <span class="job-badge font-mono">{{ store.job()!.id.slice(0, 8) }}</span>
             </div>
-
             <div class="title-row">
-              <h1>
-                PR #{{ store.job()!.pullRequest.pullRequestId }}: {{ store.job()!.pullRequest.title }}
-              </h1>
-              <div class="status-pill font-mono" [class]="'state-' + store.job()!.state">
-                <span class="pulse-dot" *ngIf="!store.isTerminal()"></span>
-                <span>Stage: {{ store.job()!.state | uppercase }}</span>
-              </div>
+              <h1>PR #{{ store.job()!.pullRequest.pullRequestId }}: {{ store.job()!.pullRequest.title }}</h1>
+              <span class="status-pill font-mono" [class]="'state-' + store.job()!.state">
+                @if (store.job()!.state === 'reviewing' || store.job()!.state === 'verifying' || store.job()!.state === 'rendering') {
+                  <span class="pulse-dot"></span>
+                }
+                {{ store.job()!.state | uppercase }}
+              </span>
             </div>
           </div>
 
@@ -54,39 +56,48 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
               <button
                 id="cancel-review-btn"
                 type="button"
-                class="btn-danger cancel-btn"
+                class="btn btn-danger cancel-btn font-mono"
                 [disabled]="store.cancelling()"
                 (click)="onCancel()"
               >
-                <span>✕</span>
-                <span>{{ store.cancelling() ? 'Cancelling...' : 'Cancel Review' }}</span>
+                @if (store.cancelling()) {
+                  <span>Cancelling...</span>
+                } @else {
+                  <span>Cancel Review</span>
+                }
               </button>
-            } @else if (store.job()!.state === 'completed') {
-              <a [routerLink]="['/reviews', store.job()!.id]" class="btn-primary report-btn">
-                <span>View Final Report</span>
-                <span>→</span>
+            }
+
+            @if (store.job()!.state === 'completed') {
+              <a
+                [routerLink]="['/reviews', store.job()!.id]"
+                class="btn btn-primary report-btn font-mono"
+              >
+                <span>View Final Report →</span>
               </a>
             }
           </div>
-        </div>
+        </header>
 
-        <!-- Terminal Status Banner -->
+        <!-- Completion Banners -->
         @if (store.job()!.state === 'completed') {
           <div class="completed-banner" role="status">
-            <span>✓</span>
-            <div>
-              <strong>Review Complete!</strong>
-              <span> All reviewer claims synthesized and verified report authored.</span>
-            </div>
-            <a [routerLink]="['/reviews', store.job()!.id]" class="btn-primary ml-auto">Open Report →</a>
+            <span class="banner-glyph">✓</span>
+            <span>Review completed successfully. All stages finished and verified report has been assembled.</span>
+            <a [routerLink]="['/reviews', store.job()!.id]" class="btn btn-outline btn-sm ml-auto font-mono">
+              Open Report
+            </a>
           </div>
-        } @else if (store.job()!.state === 'cancelled') {
-          <div class="cancelled-banner" role="alert">
-            <span>⊘</span>
-            <span>Review was cancelled. Child CLI processes terminated.</span>
-            <a routerLink="/reviews/new" class="btn-secondary ml-auto">Start Another Review</a>
+        }
+
+        @if (store.job()!.state === 'cancelled') {
+          <div class="cancelled-banner" role="status">
+            <span class="banner-glyph">⊘</span>
+            <span>Review was cancelled by user. Partial results have been saved and workspaces cleaned.</span>
           </div>
-        } @else if (store.job()!.state === 'failed') {
+        }
+
+        @if (store.job()!.state === 'failed') {
           <div class="failed-banner" role="alert">
             <span class="banner-glyph">⚠</span>
             <div class="banner-body">
@@ -96,33 +107,37 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
                   type="button"
                   class="banner-expand-btn font-mono"
                   (click)="toggleFailureBannerExpand()"
-                  [attr.aria-expanded]="isFailureBannerExpanded()"
                 >
                   {{ isFailureBannerExpanded() ? 'Show less' : 'Show more' }}
                 </button>
               }
             </div>
-            <a routerLink="/reviews/new" class="btn-secondary ml-auto">Start Another Review</a>
           </div>
         }
 
-        <!-- Realtime Telemetry Strip -->
+        <!-- Telemetry Strip -->
         <div class="telemetry-strip font-mono">
           <div class="telemetry-cell">
-            <span class="telemetry-label">ISOLATION</span>
-            <span class="telemetry-val">Read-only temp mount</span>
+            <span class="telemetry-label">REPOSITORY</span>
+            <span class="telemetry-val truncate">
+              {{ store.job()!.pullRequest.organization }}/{{ store.job()!.pullRequest.project }}/{{ store.job()!.pullRequest.repository }}
+            </span>
           </div>
           <div class="telemetry-cell">
-            <span class="telemetry-label">POLICY</span>
-            <span class="telemetry-val text-success">Zero Git Remote Mutations</span>
+            <span class="telemetry-label">DIFF IMPACT</span>
+            <span class="telemetry-val">
+              {{ store.job()!.pullRequest.changedFiles }} files (+{{ store.job()!.pullRequest.additions }}/-{{ store.job()!.pullRequest.deletions }})
+            </span>
           </div>
           <div class="telemetry-cell">
-            <span class="telemetry-label">VERIFIER</span>
-            <span class="telemetry-val">{{ store.job()!.main.model }}</span>
+            <span class="telemetry-label">TARGET BRANCH</span>
+            <span class="telemetry-val text-success">
+              {{ store.job()!.pullRequest.targetBranch }}
+            </span>
           </div>
           <div class="telemetry-cell">
-            <span class="telemetry-label">BRANCH</span>
-            <span class="telemetry-val truncate" [title]="store.job()!.pullRequest.sourceBranch">
+            <span class="telemetry-label">SOURCE BRANCH</span>
+            <span class="telemetry-val text-muted">
               {{ store.job()!.pullRequest.sourceBranch }}
             </span>
           </div>
@@ -147,6 +162,17 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
             }
           </div>
         </div>
+
+        <!-- Main Verifier Unit Section -->
+        @if (store.job()!.verifier; as verifierRun) {
+          <div class="verifier-section">
+            <div class="section-title-row">
+              <h2>Main Verifier Model</h2>
+              <span class="font-mono text-muted text-xs">SYNTHESIS & AUDIT</span>
+            </div>
+            <app-reviewer-run-card [run]="verifierRun" [isVerifier]="true" />
+          </div>
+        }
       }
     </div>
   `,
@@ -389,7 +415,7 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
       color: $status-clean;
     }
 
-    .reviewers-section {
+    .reviewers-section, .verifier-section {
       display: flex;
       flex-direction: column;
       gap: 12px;
