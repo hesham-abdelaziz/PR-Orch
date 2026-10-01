@@ -1,4 +1,6 @@
 import type { Database } from 'better-sqlite3';
+import type { ActivityVisibility } from '@pr-orchestrator/contracts';
+import type { RunActivityRecord } from '../reviews/entities/run-activity.entity.js';
 import type { DataSource } from 'typeorm';
 import type { ReviewJobRecord, JobPatch } from '../reviews/entities/review-job.entity.js';
 import type { ReviewerRunRecord } from '../reviews/entities/reviewer-run.entity.js';
@@ -78,6 +80,41 @@ export class SqliteReviewRepository implements ReviewRepository {
     const row = this.db.prepare('SELECT event_sequence FROM review_jobs WHERE id=?').get(id) as { event_sequence: number } | undefined;
     return row?.event_sequence ?? null;
   }
+  async appendRunActivity(record: RunActivityRecord, retain: number): Promise<void> {
+    this.db.transaction(() => {
+      this.db.prepare('INSERT INTO run_activity (job_id,run_id,seq,at,kind,payload) VALUES (?,?,?,?,?,?)')
+        .run(record.jobId, record.runId, record.seq, record.at, record.kind, JSON.stringify(record.payload));
+      const result = record.kind === 'provider'
+        ? this.db.prepare('UPDATE reviewer_runs SET activity_count=MAX(activity_count,?), last_activity_at=CASE WHEN last_activity_at IS NULL OR last_activity_at < ? THEN ? ELSE last_activity_at END WHERE job_id=? AND id=?')
+          .run(record.seq, record.at, record.at, record.jobId, record.runId)
+        : this.db.prepare('UPDATE reviewer_runs SET activity_count=MAX(activity_count,?) WHERE job_id=? AND id=?')
+          .run(record.seq, record.jobId, record.runId);
+      if (result.changes === 0) throw new Error('Unknown run');
+      this.db.prepare('DELETE FROM run_activity WHERE run_id=? AND seq <= ?').run(record.runId, record.seq - retain);
+    }).immediate();
+  }
+  async setRunActivityVisibility(jobId: string, runId: string, visibility: ActivityVisibility): Promise<void> {
+    this.db.prepare('UPDATE reviewer_runs SET activity_visibility=? WHERE job_id=? AND id=?').run(visibility, jobId, runId);
+  }
+  private decodeActivity(row: Row): RunActivityRecord {
+    return {
+      jobId: String(row.job_id), runId: String(row.run_id), seq: Number(row.seq),
+      at: String(row.at), kind: row.kind as RunActivityRecord['kind'], payload: JSON.parse(String(row.payload)),
+    };
+  }
+  async listRunActivity(jobId: string, perRunLimit: number): Promise<RunActivityRecord[]> {
+    const rows = this.db.prepare(`SELECT * FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY seq DESC) AS position
+      FROM run_activity WHERE job_id=?
+    ) WHERE position <= ? ORDER BY run_id,seq ASC`).all(jobId, perRunLimit) as Row[];
+    return rows.map(row => this.decodeActivity(row));
+  }
+  async listRunActivityForRun(jobId: string, runId: string, limit: number): Promise<RunActivityRecord[]> {
+    const rows = this.db.prepare(`SELECT * FROM (
+      SELECT * FROM run_activity WHERE job_id=? AND run_id=? ORDER BY seq DESC LIMIT ?
+    ) ORDER BY seq ASC`).all(jobId, runId, limit) as Row[];
+    return rows.map(row => this.decodeActivity(row));
+  }
   private putRun(run: ReviewerRunRecord) {
     const existing = this.db.prepare('SELECT job_id,role,selection FROM reviewer_runs WHERE id=?').get(run.id) as Row | undefined;
     if (existing && (existing.job_id !== run.jobId || existing.role !== run.role || existing.selection !== JSON.stringify(run.selection))) throw new Error('Run identity cannot be changed');
@@ -85,7 +122,7 @@ export class SqliteReviewRepository implements ReviewRepository {
   }
   async saveRun(run: ReviewerRunRecord) { this.db.transaction(() => this.putRun(run)).immediate(); }
   async listRuns(id: string): Promise<ReviewerRunRecord[]> {
-    return (this.db.prepare('SELECT * FROM reviewer_runs WHERE job_id=? ORDER BY rowid').all(id) as Row[]).map(r => ({ id: r.id, jobId: r.job_id, role: r.role, selection: JSON.parse(String(r.selection)), state: r.state, startedAt: r.started_at, completedAt: r.completed_at, warning: r.warning, attempts: r.attempts, sanitizedLog: r.sanitized_log, result: r.result === null ? null : JSON.parse(String(r.result)) } as ReviewerRunRecord));
+    return (this.db.prepare('SELECT * FROM reviewer_runs WHERE job_id=? ORDER BY rowid').all(id) as Row[]).map(r => ({ id: r.id, jobId: r.job_id, role: r.role, selection: JSON.parse(String(r.selection)), state: r.state, startedAt: r.started_at, completedAt: r.completed_at, warning: r.warning, attempts: r.attempts, sanitizedLog: r.sanitized_log, result: r.result === null ? null : JSON.parse(String(r.result)), activity: { visibility: r.activity_visibility, count: Number(r.activity_count), lastActivityAt: r.last_activity_at } } as ReviewerRunRecord));
   }
   async saveCandidates(records: CandidateFindingRecord[]) {
     this.db.transaction(() => {

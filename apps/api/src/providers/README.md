@@ -52,23 +52,54 @@ before they reach argv. `cli-default` omits `--model`.
 
 | Provider | Arguments (before an optional `--model <id>`) |
 | --- | --- |
-| Claude | `-p --output-format json --json-schema <inline> --permission-mode plan --permission-prompts none --restricted --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,mcp__* --strict-mcp-config --disable-slash-commands --no-session-persistence [--add-dir <context dir>]…` |
-| Codex | `--ask-for-approval never exec --sandbox read-only --ephemeral --skip-git-repo-check --color never --output-schema <file> --cd <workspace> [--model <id>] -` |
-| Gemini | `--approval-mode plan --output-format json [--sandbox] [--include-directories <dir,dir>] [--model <id>]` (prompt on stdin; `--sandbox` only when Docker/Podman is on `PATH`) |
+| Claude | `-p --output-format stream-json --verbose --json-schema <inline> --permission-mode plan --permission-prompts none --restricted --tools Read,Grep,Glob --disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,mcp__* --strict-mcp-config --disable-slash-commands --no-session-persistence [--add-dir <context dir>]…` |
+| Codex | `--ask-for-approval never exec --sandbox read-only --ephemeral --skip-git-repo-check --color never [--json] --output-schema <file> --cd <workspace> [--model <id>] -` |
+| Gemini | `--approval-mode plan --output-format stream-json\|json [--sandbox] [--include-directories <dir,dir>] [--model <id>]` (prompt on stdin; `--sandbox` only when Docker/Podman is on `PATH`) |
 
 The process cwd is always the checkout root (`ProviderRunRequest.workspacePath`). `readOnlyDirectories` lists absolute directories outside it that hold context files. `--add-dir` is forbidden for Codex by the command policy because it grants write access there.
 
 Write-capable, YOLO, auto-edit and unrestricted modes are absent and asserted
 absent by `adapter-contract.spec.ts`.
 
+## Live activity (structured streams)
+
+Each run streams the CLI's structured events so the engine can show what the
+model is doing. `process/process-supervisor.service.ts` hands every raw stdout
+chunk to an optional `onStdout` observer; `activity/json-line-splitter.ts` cuts
+it into lines on the raw `\n` byte (UTF-8 safe across chunks) with a per-line
+cap of `min(24 MiB, 2 × maxStdoutBytes + 64 KiB)`; a longer line is dropped
+whole without being buffered. A per-provider decoder (`activity/*-stream.decoder.ts`)
+reads allowlisted fields only and retains just the final answer, which then goes
+through the unchanged parser, truncation and failure classification.
+
+| Provider | Stream | Visibility | Observable |
+| --- | --- | --- | --- |
+| Claude | always (`stream-json` predates the minimum version) | `full` | `Read` (path + `offset`/`limit` lines), `Grep`/`Glob` (scope path only, never the pattern), thinking/answer *events* (never their text). The final `result` event is the old JSON envelope. |
+| Gemini | when `gemini --help` lists `stream-json` | `full` | `read_file` (path + 0-based `offset` → 1-based lines), `search_file_content`/`grep_search`/`glob`/`list_directory` (scope path), answer events. Assistant deltas are reassembled into `{"response": …}`; an error result adds `error.message`. |
+| Codex | when `codex exec --help` lists `--json` | `partial` | reasoning, shell command, web search and agent-message *kinds*. Command text, output and any paths are never read: Codex reads files through shell commands, so no file target is shown. The final answer is the last completed agent message, as plain `exec` printed. |
+| any | CLI without the stream option | `heartbeat_only` | liveness only; the old final-envelope format is used. |
+
+`activity/activity-observation.ts` keeps a path only if it normalizes (via the
+finding path validator) to a checkout-relative path that redaction leaves
+unchanged; context files outside the checkout, traversal, UNC, URLs and drive
+paths are dropped, and line numbers survive only with a kept path. Tool names
+must match `^[A-Za-z][A-Za-z0-9_.-]{0,63}$`. Prompts, model text (thinking,
+answers), tool results, search patterns and command arguments never leave the
+decoder. Malformed, non-object and oversized lines are counted and reported once
+per attempt as `skipped(n)`; they never fail a run. In streaming mode the raw
+stdout buffer is only 4 KiB (diagnostics only), so tool output such as file
+contents is not held in memory; the answer itself is capped at `maxStdoutBytes`
+(over the cap → `output_truncated`, as before). Sink callbacks are guarded and
+can never affect a run.
+
 ## Assumptions about the installed CLIs
 
 These were checked against each vendor's published CLI reference while
 building this stream; they must be re-confirmed on the target Windows machine.
 
-- **Claude Code ≥ 2.1.259** (the minimum is enforced; older versions are shown as unavailable with an update hint). Uses `claude -p`, `--json-schema`, `--permission-mode plan`, `--permission-prompts none`, `--restricted`, `--tools`, `--disallowedTools`. The answer is read from the JSON envelope (`structured_output`, else the `result` text).
-- **Codex**: `codex --ask-for-approval never exec --sandbox read-only --output-schema`. The final answer is taken from the last result/agent message in the output (JSONL events, plain text, fenced JSON or a balanced `{…}` object), then validated once.
-- **Gemini CLI**: `--approval-mode plan`, `--output-format json`; the answer is read from the JSON envelope's `response` field. `--model auto` is accepted as a model value only; the approval mode is always `plan`.
+- **Claude Code ≥ 2.1.259** (the minimum is enforced; older versions are shown as unavailable with an update hint). Uses `claude -p --output-format stream-json --verbose` (checked against 2.1.286's `--help`), `--json-schema`, `--permission-mode plan`, `--permission-prompts none`, `--restricted`, `--tools`, `--disallowedTools`. The answer is read from the final `result` event (`structured_output`, else the `result` text).
+- **Codex**: `codex --ask-for-approval never exec --sandbox read-only --output-schema`, plus `--json` when offered (0.159.3 does). Event names (`item.started`/`item.completed`, `command_execution`, `agent_message`, `reasoning`, `turn.failed`, `error`) follow the documented `exec --json` stream. The final answer is taken from the last result/agent message in the output (JSONL events, plain text, fenced JSON or a balanced `{…}` object), then validated once.
+- **Gemini CLI**: `--approval-mode plan`, `--output-format stream-json` when offered (0.60.0 does), else `json`; the answer is the reassembled `response`. Tool parameter names (`file_path`/`absolute_path`, `offset`, `limit`, `path`/`dir_path`) and the 0-based `offset` follow the CLI's built-in tool schemas. The stream shapes of all three CLIs were checked against `--help` and documentation only: no paid run was made, so confirm them with one opt-in smoke review per provider. `--model auto` is accepted as a model value only; the approval mode is always `plan`.
 - Authentication is detected from each CLI's existing login or documented API-key variables; a definitive answer may only appear at run time (`unknown_until_run`).
 - Models offered as *maintained* aliases are a convenience list; `cli-default` always works and is the recommended default.
 

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 
 import type { AuthenticationState, ModelCatalog, ReasoningEffort } from '@pr-orchestrator/contracts';
 
+import { ClaudeStreamDecoder } from '../activity/claude-stream.decoder.js';
+import type { ActivityEmitter, StreamDecoder } from '../activity/stream-decoder.js';
 import { buildModelCatalog, type CatalogModel } from '../model-catalog.service.js';
 import type { ProviderRunRequest, ResolvedExecutable } from '../provider-adapter.js';
 import { buildClaudeReviewArgs } from './adapter-command-policy.js';
@@ -57,6 +59,11 @@ export class ClaudeAdapter extends BaseCliAdapter {
     return Promise.resolve(
       `Claude Code ${CLAUDE_MINIMUM_VERSION.join('.')} or newer is required for restricted, prompt-free review mode (found ${version ?? 'unknown'}). Run \`claude update\`.`,
     );
+  }
+
+  /** Every supported Claude Code version streams (`stream-json` predates the minimum). */
+  protected override createStreamDecoder(emit: ActivityEmitter, maxFinalBytes: number): StreamDecoder {
+    return new ClaudeStreamDecoder(emit, maxFinalBytes);
   }
 
   protected override buildArguments(request: ProviderRunRequest): string[] {

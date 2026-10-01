@@ -15,7 +15,7 @@ import {
   UnprocessableEntityException,
   type MessageEvent,
 } from '@nestjs/common';
-import type { CreateReviewRequest, ReviewJob } from '@pr-orchestrator/contracts';
+import type { CreateReviewRequest, ReviewJob, RunActivityLog } from '@pr-orchestrator/contracts';
 import { ZodError } from 'zod';
 import { map, type Observable } from 'rxjs';
 
@@ -126,6 +126,15 @@ export class ReviewsController {
     return this.events
       .stream(reviewId, () => this.reports.getReview(reviewId))
       .pipe(map((event) => ({ id: String(event.sequence), data: event })));
+  }
+
+  /** Retained activity log of one reviewer or verifier run (bounded; oldest first). */
+  @Get(':reviewId/runs/:runId/activity')
+  async runActivity(@Param('reviewId') reviewId: string, @Param('runId') runId: string): Promise<RunActivityLog> {
+    const log = UUID.test(reviewId) && UUID.test(runId) ? await this.reports.getRunActivity(reviewId, runId) : null;
+    if (!log) throw new NotFoundException('Run not found.');
+
+    return log;
   }
 
   @Get(':reviewId/report.md')

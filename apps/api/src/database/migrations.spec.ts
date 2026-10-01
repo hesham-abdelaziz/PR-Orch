@@ -51,3 +51,34 @@ describe('platform migrations on real SQLite', () => {
     }
   });
 });
+
+describe('run activity migration', () => {
+  it('upgrades a 004 database preserving existing rows and defaulting activity columns', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'activity-upgrade-'));
+    const path = join(directory, 'test.sqlite');
+    const db = createPlatformDataSource(path);
+    db.setOptions({ migrations: Array.isArray(db.options.migrations) ? db.options.migrations.slice(0, 4) : [] });
+    await db.initialize();
+    try {
+      await db.runMigrations();
+      await db.query("INSERT INTO review_jobs (id,state,pull_request,main,reviewers,settings,warnings,exclusions,created_at,updated_at) VALUES ('old','failed','{}','{}','[]','{}','[]','[]','now','now')");
+      await db.query("INSERT INTO reviewer_runs (id,job_id,role,selection,state,attempts,sanitized_log) VALUES ('run','old','reviewer','{}','queued',2,'kept')");
+      await db.query("INSERT INTO candidate_findings VALUES ('old','finding','run','{}')");
+      const jobs = await db.query('SELECT * FROM review_jobs');
+      const runs = await db.query('SELECT * FROM reviewer_runs');
+      const candidates = await db.query('SELECT * FROM candidate_findings');
+      await db.destroy();
+      const upgraded = await createPlatformDataSource(path).initialize();
+      try {
+        await upgraded.runMigrations();
+        expect(await upgraded.query('SELECT * FROM review_jobs')).toEqual(jobs);
+        expect(await upgraded.query('SELECT * FROM candidate_findings')).toEqual(candidates);
+        expect(await upgraded.query('SELECT * FROM reviewer_runs')).toEqual(runs.map((run: object) => ({ ...run, activity_visibility: null, activity_count: 0, last_activity_at: null })));
+        expect(await upgraded.query('SELECT * FROM run_activity')).toEqual([]);
+      } finally { await upgraded.destroy(); }
+    } finally {
+      if (db.isInitialized) await db.destroy();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

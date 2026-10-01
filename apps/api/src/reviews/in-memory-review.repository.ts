@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import type { ActivityVisibility } from '@pr-orchestrator/contracts';
 
 import type { ReportRecord } from '../reports/entities/report.entity.js';
 import type { CandidateFindingRecord } from './entities/candidate-finding.entity.js';
 import type { FinalFindingRecord } from './entities/final-finding.entity.js';
 import type { JobPatch, ReviewJobRecord } from './entities/review-job.entity.js';
 import type { ReviewerRunRecord } from './entities/reviewer-run.entity.js';
+import type { RunActivityRecord, RunActivityState } from './entities/run-activity.entity.js';
 import { historyStatusOf } from './history-status.js';
 import { isTerminal } from './job-state-machine.js';
 import type {
@@ -33,13 +35,16 @@ export class InMemoryReviewRepository implements ReviewRepository {
   private readonly candidates = new Map<string, CandidateFindingRecord>();
   private readonly finalFindings = new Map<string, FinalFindingRecord>();
   private readonly reports = new Map<string, ReportRecord>();
+  /** run id -> retained activity rows, `seq` ascending. */
+  private readonly activity = new Map<string, RunActivityRecord[]>();
+  private readonly activityState = new Map<string, RunActivityState>();
 
   createJob(record: ReviewJobRecord, initialRuns: ReviewerRunRecord[] = []): Promise<CreateJobResult> {
     const active = [...this.jobs.values()].find((job) => !isTerminal(job.state));
     if (active) return Promise.resolve({ created: false, activeJobId: active.id });
 
     this.jobs.set(record.id, clone(record));
-    for (const run of initialRuns) this.runs.set(run.id, clone(run));
+    for (const run of initialRuns) this.runs.set(run.id, clone(withoutActivity(run)));
 
     return Promise.resolve({ created: true, job: clone(record) });
   }
@@ -94,14 +99,61 @@ export class InMemoryReviewRepository implements ReviewRepository {
     return Promise.resolve(this.jobs.get(jobId)?.eventSequence ?? null);
   }
 
+  /** Like the SQLite upsert, never writes the activity bookkeeping. */
   saveRun(run: ReviewerRunRecord): Promise<void> {
-    this.runs.set(run.id, clone(run));
+    this.runs.set(run.id, clone(withoutActivity(run)));
 
     return Promise.resolve();
   }
 
   listRuns(jobId: string): Promise<ReviewerRunRecord[]> {
-    return Promise.resolve([...this.runs.values()].filter((run) => run.jobId === jobId).map(clone));
+    return Promise.resolve(
+      [...this.runs.values()]
+        .filter((run) => run.jobId === jobId)
+        .map((run) => ({ ...clone(run), activity: { ...this.stateOf(run.id) } })),
+    );
+  }
+
+  appendRunActivity(record: RunActivityRecord, retain: number): Promise<void> {
+    const run = this.runs.get(record.runId);
+    if (!run || run.jobId !== record.jobId) return Promise.reject(new Error('Unknown run for activity'));
+    const rows = this.activity.get(record.runId) ?? [];
+    if (rows.some((row) => row.seq === record.seq)) return Promise.reject(new Error('Duplicate activity sequence'));
+
+    const state = this.stateOf(record.runId);
+    const kept = [...rows, clone(record)]
+      .sort((left, right) => left.seq - right.seq)
+      .filter((row) => row.seq > record.seq - retain);
+    this.activity.set(record.runId, kept);
+    this.activityState.set(record.runId, {
+      ...state,
+      count: Math.max(state.count, record.seq),
+      lastActivityAt:
+        record.kind === 'provider' && (state.lastActivityAt === null || state.lastActivityAt < record.at)
+          ? record.at
+          : state.lastActivityAt,
+    });
+
+    return Promise.resolve();
+  }
+
+  setRunActivityVisibility(jobId: string, runId: string, visibility: ActivityVisibility): Promise<void> {
+    const run = this.runs.get(runId);
+    if (run?.jobId === jobId) this.activityState.set(runId, { ...this.stateOf(runId), visibility });
+
+    return Promise.resolve();
+  }
+
+  listRunActivity(jobId: string, perRunLimit: number): Promise<RunActivityRecord[]> {
+    const runIds = [...this.runs.values()].filter((run) => run.jobId === jobId).map((run) => run.id).sort();
+
+    return Promise.resolve(runIds.flatMap((runId) => (this.activity.get(runId) ?? []).slice(-perRunLimit).map(clone)));
+  }
+
+  listRunActivityForRun(jobId: string, runId: string, limit: number): Promise<RunActivityRecord[]> {
+    if (this.runs.get(runId)?.jobId !== jobId) return Promise.resolve([]);
+
+    return Promise.resolve((this.activity.get(runId) ?? []).slice(-limit).map(clone));
   }
 
   saveCandidates(records: CandidateFindingRecord[]): Promise<void> {
@@ -166,6 +218,10 @@ export class InMemoryReviewRepository implements ReviewRepository {
     });
   }
 
+  private stateOf(runId: string): RunActivityState {
+    return this.activityState.get(runId) ?? { visibility: null, count: 0, lastActivityAt: null };
+  }
+
   private apply(job: ReviewJobRecord, to: ReviewJobRecord['state'], at: string, patch?: JobPatch) {
     Object.assign(job, patch ? withoutSequence(clone(patch)) : {}, {
       state: to,
@@ -198,6 +254,12 @@ export class InMemoryReviewRepository implements ReviewRepository {
 
     return true;
   }
+}
+
+function withoutActivity(run: ReviewerRunRecord): ReviewerRunRecord {
+  const { activity: _ignored, ...rest } = run;
+
+  return rest;
 }
 
 /** Only `allocateEventSequence` may move the counter, so a patch can never rewind it. */

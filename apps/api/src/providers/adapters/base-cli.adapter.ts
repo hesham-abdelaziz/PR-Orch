@@ -7,6 +7,9 @@ import type {
   ProviderId,
 } from '@pr-orchestrator/contracts';
 
+import { toObservation } from '../activity/activity-observation.js';
+import { JsonLineSplitter } from '../activity/json-line-splitter.js';
+import { isObject, type ActivityEmitter, type StreamDecoder } from '../activity/stream-decoder.js';
 import { buildChildEnvironment } from '../process/environment-policy.js';
 import type { ProcessRunResult } from '../process/process-runner.types.js';
 import type { ProcessSupervisor } from '../process/process-supervisor.service.js';
@@ -14,6 +17,7 @@ import type {
   CliLocator,
   ProviderAdapter,
   ProviderFailure,
+  ProviderActivitySink,
   ProviderInstallation,
   ProviderRunRequest,
   ProviderRunResult,
@@ -40,6 +44,14 @@ export interface CliAdapterDependencies {
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 const PROBE_OUTPUT_BYTES = 128 * 1024;
 const DEFAULT_OUTPUT_BYTES = 1_048_576;
+/**
+ * In streaming mode the raw stdout buffer is not the answer channel (the
+ * decoder retains that), and keeping it would hold tool results such as file
+ * contents in memory. A small buffer satisfies the supervisor's contract.
+ */
+const STREAM_RAW_STDOUT_BYTES = 4_096;
+/** Upper bound for one JSONL event line; longer lines are dropped whole. */
+const MAX_STREAM_LINE_BYTES = 24 * 1_048_576;
 const VERSION_PATTERN = /(\d+)\.(\d+)\.(\d+)/u;
 
 export type Version = readonly [number, number, number];
@@ -85,7 +97,16 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
     version: string | undefined,
   ): Promise<string | undefined>;
 
-  protected abstract buildArguments(request: ProviderRunRequest): string[];
+  /** `stream` is true when `createStreamDecoder` returned a decoder for this run. */
+  protected abstract buildArguments(request: ProviderRunRequest, stream: boolean): string[];
+
+  /**
+   * Returns a decoder for the CLI's structured event stream, or undefined when
+   * the installed CLI cannot stream (the run is then observable as liveness only).
+   */
+  protected createStreamDecoder(_emit: ActivityEmitter, _maxFinalBytes: number): StreamDecoder | undefined {
+    return undefined;
+  }
 
   abstract checkAuthentication(): Promise<AuthenticationState>;
 
@@ -162,15 +183,27 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
       return fail({ kind: 'unsupported', message: installation.unsupportedReason });
     }
 
+    const parent = this.parentEnvironment();
+    const secrets = collectSecretValues(parent);
+    const maxStdoutBytes = request.maxStdoutBytes ?? DEFAULT_OUTPUT_BYTES;
+    const sink = request.activity;
+    const emit: ActivityEmitter = (raw) => {
+      if (!sink) return;
+      guard(() => sink.activity(toObservation(raw, request.workspacePath, secrets)));
+    };
+    const decoder = this.createStreamDecoder(emit, maxStdoutBytes);
+
     let args: string[];
     try {
-      args = this.buildArguments(request);
+      args = this.buildArguments(request, decoder !== undefined);
       assertCommandPolicy(this.id, args, request.prompt);
     } catch (error) {
       return fail({ kind: 'invalid_request', message: errorMessage(error) });
     }
 
-    const parent = this.parentEnvironment();
+    const stream = decoder ? streamReader(decoder, maxStdoutBytes) : undefined;
+    if (sink) guard(() => sink.visibility(decoder ? decoder.visibility : 'heartbeat_only'));
+
     const result = await this.dependencies.supervisor.run({
       runId: request.runId,
       executablePath: installation.executable.executablePath,
@@ -178,7 +211,7 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
       cwd: request.workspacePath,
       stdin: request.prompt,
       timeoutMs: request.timeoutMs,
-      maxStdoutBytes: request.maxStdoutBytes ?? DEFAULT_OUTPUT_BYTES,
+      maxStdoutBytes: stream ? STREAM_RAW_STDOUT_BYTES : maxStdoutBytes,
       maxStderrBytes: request.maxStderrBytes ?? DEFAULT_OUTPUT_BYTES,
       environment: buildChildEnvironment({
         parent,
@@ -186,9 +219,15 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
         overrides: { NO_COLOR: '1' },
       }),
       signal: request.signal,
+      ...(stream ? { onStdout: (chunk: Buffer) => stream.splitter.push(chunk) } : {}),
     });
 
-    return this.mapResult(base, result, collectSecretValues(parent));
+    if (stream) {
+      guard(() => stream.splitter.end());
+      reportSkipped(sink, stream.skipped());
+    }
+
+    return this.mapResult(base, result, secrets, stream);
   }
 
   async cancel(runId: string): Promise<void> {
@@ -236,9 +275,11 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
 
   private mapResult(
     base: { provider: ProviderId; runId: string },
-    result: ProcessRunResult,
+    processResult: ProcessRunResult,
     secrets: readonly string[],
+    stream?: StreamReader,
   ): ProviderRunResult {
+    const result = stream ? streamedResult(processResult, stream) : processResult;
     const durationMs = result.durationMs;
 
     switch (result.status) {
@@ -315,4 +356,75 @@ export abstract class BaseCliAdapter implements ProviderAdapter {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface StreamReader {
+  decoder: StreamDecoder;
+  splitter: JsonLineSplitter;
+  /** Malformed (non-JSON, non-object, decoder-rejected) plus oversized lines. */
+  skipped(): number;
+}
+
+function streamReader(decoder: StreamDecoder, maxStdoutBytes: number): StreamReader {
+  let malformed = 0;
+  // An event line wraps the answer in JSON (escaping, envelope fields), so it may
+  // be larger than the answer itself; the decoder applies the answer cap.
+  const lineCap = Math.min(MAX_STREAM_LINE_BYTES, maxStdoutBytes * 2 + 65_536);
+  const splitter = new JsonLineSplitter(lineCap, (line) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      malformed += 1;
+
+      return;
+    }
+    if (!isObject(parsed)) {
+      malformed += 1;
+
+      return;
+    }
+    try {
+      decoder.handle(parsed, line);
+    } catch {
+      malformed += 1;
+    }
+  });
+
+  return { decoder, splitter, skipped: () => malformed + splitter.dropped };
+}
+
+/**
+ * Replaces the raw stdout of a streamed run with the decoder's final-answer
+ * channel, so the existing truncation, embedded-error and failure
+ * classification logic applies unchanged.
+ */
+function streamedResult(result: ProcessRunResult, stream: StreamReader): ProcessRunResult {
+  const { decoder, splitter } = stream;
+  const final = decoder.finalOutput();
+
+  if (result.status === 'completed') {
+    // A dropped oversized line with no answer found is most likely the answer.
+    const truncated = decoder.finalTruncated || (final === undefined && splitter.dropped > 0);
+
+    return { ...result, stdout: truncated ? '' : (final ?? ''), stdoutTruncated: truncated };
+  }
+  if (result.status === 'failed') {
+    return { ...result, stdout: decoder.diagnostics() || final || '', stdoutTruncated: false };
+  }
+
+  return result;
+}
+
+/** Activity observers must never affect a run. */
+function guard(action: () => void): void {
+  try {
+    action();
+  } catch {
+    // Ignored by design.
+  }
+}
+
+function reportSkipped(sink: ProviderActivitySink | undefined, count: number): void {
+  if (sink && count > 0) guard(() => sink.skipped(count));
 }

@@ -1,10 +1,11 @@
-import type { JobState } from '@pr-orchestrator/contracts';
+import type { ActivityVisibility, JobState } from '@pr-orchestrator/contracts';
 
 import type { ReportRecord } from '../reports/entities/report.entity.js';
 import type { CandidateFindingRecord } from './entities/candidate-finding.entity.js';
 import type { FinalFindingRecord } from './entities/final-finding.entity.js';
 import type { JobPatch, ReviewJobRecord } from './entities/review-job.entity.js';
 import type { ReviewerRunRecord } from './entities/reviewer-run.entity.js';
+import type { RunActivityRecord } from './entities/run-activity.entity.js';
 
 export const REVIEW_REPOSITORY = Symbol('REVIEW_REPOSITORY');
 
@@ -78,6 +79,28 @@ export interface EventSequenceStore {
 }
 
 /**
+ * Bounded per-run activity log (table `run_activity`) plus the bookkeeping
+ * columns on `reviewer_runs`. Only the newest `retain` entries of a run are
+ * kept; `activity_count` and `last_activity_at` survive pruning.
+ */
+export interface RunActivityStore {
+  /**
+   * One transaction:
+   * 1. insert the row (a duplicate `(runId, seq)` is an error);
+   * 2. `activity_count = MAX(activity_count, seq)` on the run;
+   * 3. when `kind = 'provider'`, `last_activity_at = MAX(last_activity_at, at)`;
+   * 4. delete the run's rows with `seq <= record.seq - retain`.
+   */
+  appendRunActivity(record: RunActivityRecord, retain: number): Promise<void>;
+  /** Sets `reviewer_runs.activity_visibility` for the run. */
+  setRunActivityVisibility(jobId: string, runId: string, visibility: ActivityVisibility): Promise<void>;
+  /** The newest `perRunLimit` entries of every run of the job, ordered by run, then `seq` ascending. */
+  listRunActivity(jobId: string, perRunLimit: number): Promise<RunActivityRecord[]>;
+  /** The newest `limit` entries of one run, `seq` ascending; empty when the run is unknown. */
+  listRunActivityForRun(jobId: string, runId: string, limit: number): Promise<RunActivityRecord[]>;
+}
+
+/**
  * Persistence port implemented by the platform with SQLite. These operations
  * must be atomic in the database, not merely in memory:
  *
@@ -85,8 +108,9 @@ export interface EventSequenceStore {
  * - `transitionJob` / `completeJob`: compare-and-set on `state`, with the
  *   report insert and state change in one transaction.
  * - `allocateEventSequence`: a single atomic increment-and-return.
+ * - `appendRunActivity`: insert, bookkeeping and pruning in one transaction.
  */
-export interface ReviewRepository extends EventSequenceStore {
+export interface ReviewRepository extends EventSequenceStore, RunActivityStore {
   /**
    * Inserts the job and its initial (queued) runs in one transaction, so a
    * reader never sees a job without its reviewers. Loses cleanly, inserting

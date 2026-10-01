@@ -1,6 +1,6 @@
 import { type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { ReviewEventSchema, ReviewJobSchema } from '@pr-orchestrator/contracts';
+import { ReviewEventSchema, ReviewJobSchema, RunActivityLogSchema } from '@pr-orchestrator/contracts';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -54,6 +54,34 @@ async function setup(scripts: Parameters<typeof createHarness>[0] = {}) {
 const body = (h: Harness) => h.request();
 
 describe('ReviewsController', () => {
+  it('serves a bounded, validated activity log per run and 404s unknown runs', async () => {
+    const { http, h } = await setup({
+      scripts: {
+        claude: (r) => {
+          r.activity?.visibility('full');
+          r.activity?.activity({ action: 'reading_file', tool: 'Read', target: { path: 'src/loader.ts', startLine: 3 } });
+
+          return completed('claude', r, acceptAll(r.prompt));
+        },
+      },
+    });
+    const created = ReviewJobSchema.parse((await http().post('/api/reviews').send(body(h)).expect(201)).body);
+    await h.orchestrator.awaitCompletion(created.id);
+
+    const job = ReviewJobSchema.parse((await http().get(`/api/reviews/${created.id}`).expect(200)).body);
+    const verifierId = job.verifier?.id ?? '';
+    expect(job.verifier?.activity?.current?.target).toEqual({ path: 'src/loader.ts', startLine: 3 });
+
+    const log = RunActivityLogSchema.parse((await http().get(`/api/reviews/${created.id}/runs/${verifierId}/activity`).expect(200)).body);
+    expect(log.runId).toBe(verifierId);
+    expect(log.items.map((item) => item.action)).toEqual(['attempt_started', 'process_started', 'reading_file', 'attempt_ended']);
+    expect(log.total).toBe(4);
+
+    await http().get(`/api/reviews/${created.id}/runs/00000000-0000-4000-8000-0000000000ff/activity`).expect(404);
+    await http().get(`/api/reviews/${created.id}/runs/not-a-uuid/activity`).expect(404);
+    await http().get(`/api/reviews/00000000-0000-4000-8000-0000000000ff/runs/${verifierId}/activity`).expect(404);
+  });
+
   it('creates a review and returns a valid queued ReviewJob', async () => {
     const { http, h } = await setup();
 

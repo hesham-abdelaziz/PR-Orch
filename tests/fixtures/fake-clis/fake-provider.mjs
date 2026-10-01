@@ -31,6 +31,75 @@ function payloadJson() {
   return JSON.stringify(REVIEWER_SUCCESS_PAYLOAD);
 }
 
+/** Set per invocation: the provider whose structured event stream was requested. */
+let streamMode = null;
+
+function detectStreamMode(provider, argv) {
+  if (provider === 'codex') return argv.includes('--json') ? 'codex' : null;
+
+  return argv.includes('stream-json') ? provider : null;
+}
+
+/**
+ * Synthetic event streams shaped like each CLI's documented stream format. They
+ * deliberately carry content that must never surface as activity (thinking
+ * text, file contents, search patterns, command text and output).
+ */
+function streamLines(provider, text, structured, behavior) {
+  const cwd = process.cwd();
+  const separator = cwd.includes('\\') ? '\\' : '/';
+  const file = `${cwd}${separator}src${separator}app.ts`;
+  const prelude = behavior.streamPrelude ?? [];
+  const json = (value) => JSON.stringify(value);
+
+  if (provider === 'claude') {
+    return [
+      json({ type: 'system', subtype: 'init', session_id: '00000000-0000-4000-8000-000000000000', tools: ['Read', 'Grep', 'Glob'] }),
+      ...prelude,
+      json({ type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'PRIVATE-REASONING-TEXT' },
+        { type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: file, offset: 10, limit: 20 } },
+      ] } }),
+      json({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'FILE-CONTENT-MUST-NOT-LEAK' }] } }),
+      json({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_2', name: 'Grep', input: { pattern: 'SEARCH-PATTERN-MUST-NOT-LEAK', path: cwd } },
+      ] } }),
+      json({ type: 'assistant', message: { content: [{ type: 'text', text: 'Here is the review.' }] } }),
+      envelope('claude', text, structured),
+    ];
+  }
+  if (provider === 'codex') {
+    return [
+      json({ type: 'thread.started', thread_id: 'thread-1' }),
+      json({ type: 'turn.started' }),
+      ...prelude,
+      json({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: 'PRIVATE-REASONING-TEXT' } }),
+      json({ type: 'item.started', item: { id: 'item_1', type: 'command_execution', command: "bash -lc 'cat COMMAND-MUST-NOT-LEAK'", status: 'in_progress' } }),
+      json({ type: 'item.completed', item: { id: 'item_1', type: 'command_execution', command: "bash -lc 'cat COMMAND-MUST-NOT-LEAK'", aggregated_output: 'OUTPUT-MUST-NOT-LEAK', exit_code: 0, status: 'completed' } }),
+      json({ type: 'item.completed', item: { id: 'item_2', type: 'agent_message', text } }),
+      json({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ];
+  }
+
+  const half = Math.floor(text.length / 2);
+  return [
+    json({ type: 'init', session_id: 'session-1', model: 'fake' }),
+    ...prelude,
+    json({ type: 'tool_use', tool_name: 'read_file', tool_id: 'read-1', parameters: { file_path: file, offset: 9, limit: 20 } }),
+    json({ type: 'tool_result', tool_id: 'read-1', status: 'success', output: 'FILE-CONTENT-MUST-NOT-LEAK' }),
+    json({ type: 'message', role: 'assistant', content: text.slice(0, half), delta: true }),
+    json({ type: 'message', role: 'assistant', content: text.slice(half), delta: true }),
+    json({ type: 'result', status: 'success', stats: { total_tokens: 1 } }),
+  ];
+}
+
+/** The full stdout of a successful (exit 0) run in the requested output format. */
+function answer(provider, text, structured, behavior) {
+  return streamMode
+    ? `${streamLines(provider, text, structured, behavior).join('\n')}\n`
+    : `${envelope(provider, text, structured)}\n`;
+}
+
 function envelope(provider, text, structured) {
   if (provider === 'claude') {
     return JSON.stringify({
@@ -111,23 +180,22 @@ export async function runFakeProvider(provider, behavior = {}) {
   }
 
   const invocation = nextInvocationNumber(behavior.counterFile);
+  streamMode = detectStreamMode(provider, argv);
 
   switch (behavior.run ?? 'success') {
     case 'success': {
-      process.stdout.write(
-        `${envelope(provider, payloadJson(), REVIEWER_SUCCESS_PAYLOAD)}\n`,
-      );
+      process.stdout.write(answer(provider, payloadJson(), REVIEWER_SUCCESS_PAYLOAD, behavior));
       return 0;
     }
     case 'malformed': {
-      process.stdout.write(`${envelope(provider, '{"findings": [ {"title": "cut')}\n`);
+      process.stdout.write(answer(provider, '{"findings": [ {"title": "cut', undefined, behavior));
       return 0;
     }
     case 'malformed-once': {
       process.stdout.write(
         invocation === 1
-          ? `${envelope(provider, 'Sure! Here you go: {oops')}\n`
-          : `${envelope(provider, payloadJson(), REVIEWER_SUCCESS_PAYLOAD)}\n`,
+          ? answer(provider, 'Sure! Here you go: {oops', undefined, behavior)
+          : answer(provider, payloadJson(), REVIEWER_SUCCESS_PAYLOAD, behavior),
       );
       return 0;
     }

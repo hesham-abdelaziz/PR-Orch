@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { RunLivenessService } from '../reviews/run-liveness.service.js';
 import { ReportQueryService } from './report-query.service.js';
 import { ReportRenderer } from './report-renderer.service.js';
 
@@ -8,7 +9,8 @@ import { ReportRenderer } from './report-renderer.service.js';
  * the token must be visible to this module, e.g. via a `@Global()` module.
  */
 @Module({
-  providers: [ReportRenderer, ReportQueryService],
-  exports: [ReportRenderer, ReportQueryService],
+  // RunLivenessService is shared with the orchestrator (ReviewsModule imports this module).
+  providers: [ReportRenderer, ReportQueryService, RunLivenessService],
+  exports: [ReportRenderer, ReportQueryService, RunLivenessService],
 })
 export class ReportsModule {}

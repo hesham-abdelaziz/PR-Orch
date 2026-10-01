@@ -169,7 +169,16 @@ export class ProcessSupervisor {
         // Spawn failures never produce a pid; later runtime errors follow an exit.
         if (child.pid === undefined) finish(null, null, toSpawnError(error));
       });
-      child.stdout?.on('data', (chunk: Buffer) => stdout.append(chunk));
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdout.append(chunk);
+        if (request.onStdout) {
+          try {
+            request.onStdout(chunk);
+          } catch {
+            // Observers (activity decoders) must never break process supervision.
+          }
+        }
+      });
       child.stderr?.on('data', (chunk: Buffer) => stderr.append(chunk));
       child.stdin?.on('error', () => undefined); // EPIPE when the child exits early
       child.stdin?.end(request.stdin, 'utf8');

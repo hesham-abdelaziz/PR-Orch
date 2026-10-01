@@ -25,6 +25,7 @@ import { ReviewerPromptBuilder } from '../../../apps/api/src/reviews/prompts/rev
 import { VerifierPromptBuilder } from '../../../apps/api/src/reviews/prompts/verifier-prompt.builder.js';
 import { ReviewEventsService } from '../../../apps/api/src/reviews/review-events.service.js';
 import { ReviewOrchestratorService } from '../../../apps/api/src/reviews/review-orchestrator.service.js';
+import { RunLivenessService } from '../../../apps/api/src/reviews/run-liveness.service.js';
 import type {
   PrepareWorkspaceInput,
   PreparedWorkspace,
@@ -325,6 +326,8 @@ export interface Harness {
   scratchRoot: string;
   /** Job states and reviewer events in emission order. */
   log: string[];
+  /** Heartbeat state shared with the orchestrator, as Nest shares it with ReportQueryService. */
+  liveness: RunLivenessService;
   request(overrides?: Partial<CreateReviewRequest>): CreateReviewRequest;
   scratchEntries(): Promise<string[]>;
   dispose(): Promise<void>;
@@ -338,6 +341,8 @@ export interface HarnessOptions {
   checkout?: InMemoryCheckout;
   /** Replaces the in-memory checkout, e.g. with the real filesystem inspector. */
   checkoutInspectors?: CheckoutInspectorFactory;
+  /** Process heartbeat interval while a provider runs (production default 15 s). */
+  heartbeatIntervalMs?: number;
 }
 
 const neverConfigured: Script = (request) => {
@@ -363,9 +368,11 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     jobStateChanged(reviewId, state);
   };
   const reviewerStateChanged = events.reviewerStateChanged.bind(events);
-  events.reviewerStateChanged = (reviewId, runId, state, reviewer) => {
-    log.push(`run:${reviewer.provider}/${reviewer.model}:${state}`);
-    reviewerStateChanged(reviewId, runId, state, reviewer);
+  events.reviewerStateChanged = (reviewId, runId, state, reviewer, details) => {
+    // Verifier transitions are logged with their role so reviewer sequences stay comparable.
+    const prefix = details?.role === 'verifier' ? 'verifier' : 'run';
+    log.push(`${prefix}:${reviewer.provider}/${reviewer.model}:${state}`);
+    reviewerStateChanged(reviewId, runId, state, reviewer, details);
   };
 
   const workspace = new FakeWorkspace();
@@ -381,6 +388,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       'src/style.ts': syntheticSource(),
     });
 
+  const liveness = new RunLivenessService();
   const orchestrator = new ReviewOrchestratorService(
     repository,
     workspace,
@@ -401,7 +409,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       idFactory: () => uuid(),
       checkoutInspectors: options.checkoutInspectors ?? checkout,
       ...(options.secretValues ? { secretValues: () => options.secretValues ?? [] } : {}),
+      ...(options.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs }),
     },
+    liveness,
   );
 
   return {
@@ -417,6 +427,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     checkout,
     scratchRoot,
     log,
+    liveness,
     request: (overrides = {}) => ({
       pullRequestUrl: 'https://dev.azure.com/acme/shop/_git/web/pullrequest/42',
       main: CLAUDE,

@@ -26,7 +26,7 @@ describe('durable review repository', () => {
     const run = { id: uuid(), jobId: a.id, role: 'reviewer' as const, selection: a.reviewers[0]!, state: 'queued' as const, startedAt: null, completedAt: null, warning: null, attempts: 0, sanitizedLog: '', result: null };
     const outcomes = await Promise.all([repository.createJob(a, [run]), repository.createJob(b, [{ ...run, id: uuid(), jobId: b.id }])]);
     expect(outcomes).toEqual([expect.objectContaining({ created: true }), { created: false, activeJobId: a.id }]);
-    expect(await repository.listRuns(a.id)).toEqual([run]);
+    expect(await repository.listRuns(a.id)).toEqual([{ ...run, activity: { visibility: null, count: 0, lastActivityAt: null } }]);
     expect(await repository.getJob(b.id)).toBeNull();
     expect(await repository.listRuns(b.id)).toEqual([]);
   });
@@ -50,7 +50,7 @@ describe('durable review repository', () => {
     const job = jobRecord({ state: 'rendering' });
     await expect(repository.createJob(job, [{ ...run, sanitizedLog: 'overwritten' }])).rejects.toThrow();
     expect(await repository.getJob(job.id)).toBeNull();
-    expect(await repository.listRuns(old.id)).toEqual([run]);
+    expect(await repository.listRuns(old.id)).toEqual([{ ...run, activity: { visibility: null, count: 0, lastActivityAt: null } }]);
     await repository.createJob(job);
     await expect(repository.saveRun({ ...run, jobId: job.id })).rejects.toThrow();
     await expect(repository.saveCandidates([{ id: uuid(), jobId: job.id, runId: run.id, finding: finding() }])).rejects.toThrow();
@@ -179,5 +179,81 @@ describe('durable review repository', () => {
     const retrievedRuns = await repository.listRuns(newJob.id);
     expect(retrievedRuns[0]?.selection.reasoningEffort).toBe('medium');
     expect(retrievedRuns[1]?.selection.reasoningEffort).toBe('low');
+  });
+});
+import type { RunActivityRecord } from '../reviews/entities/run-activity.entity.js';
+import type { ReviewerRunRecord } from '../reviews/entities/reviewer-run.entity.js';
+
+describe('durable run activity', () => {
+  let db: DataSource;
+  let repository: SqliteReviewRepository;
+  let run: ReviewerRunRecord;
+  let jobId: string;
+  beforeEach(async () => {
+    db = await createPlatformDataSource(':memory:').initialize();
+    await db.runMigrations();
+    repository = new SqliteReviewRepository(db);
+    const job = jobRecord();
+    jobId = job.id;
+    run = { id: uuid(), jobId, role: 'reviewer', selection: job.reviewers[0]!, state: 'queued', startedAt: null, completedAt: null, warning: null, attempts: 0, sanitizedLog: '', result: null };
+    await repository.createJob(job, [run]);
+  });
+  afterEach(async () => { if (db.isInitialized) await db.destroy(); });
+  const at = (seq: number) => new Date(Date.UTC(2026, 8, 29, 12, 0, seq)).toISOString();
+  const record = (run: ReviewerRunRecord, seq: number, kind: RunActivityRecord['kind'] = 'provider'): RunActivityRecord => ({
+    jobId: run.jobId, runId: run.id, seq, at: at(seq), kind,
+    payload: kind === 'provider' ? { action: 'reading_file', target: { path: 'src/auth.ts', startLine: 1 } } : kind === 'lifecycle' ? { action: 'attempt_ended', outcome: 'completed' } : { action: 'events_skipped', count: 1 },
+  });
+
+  it('appends and prunes while retaining provider activity bookkeeping', async () => {
+    for (let seq = 1; seq <= 205; seq++) await repository.appendRunActivity(record(run, seq), 200);
+    const entries = await repository.listRunActivityForRun(jobId, run.id, 200);
+    expect(entries).toEqual(Array.from({ length: 200 }, (_, i) => record(run, i + 6)));
+    expect((await repository.listRuns(jobId))[0]?.activity).toEqual({ visibility: null, count: 205, lastActivityAt: at(205) });
+    await repository.appendRunActivity(record(run, 206, 'lifecycle'), 200);
+    await repository.appendRunActivity(record(run, 207, 'notice'), 200);
+    await repository.appendRunActivity({ ...record(run, 208), at: at(100) }, 200);
+    expect((await repository.listRuns(jobId))[0]?.activity).toEqual({ visibility: null, count: 208, lastActivityAt: at(205) });
+  });
+
+  it('rolls back duplicate sequences and rejects unknown or cross-job runs', async () => {
+    const original = record(run, 1);
+    await repository.appendRunActivity(original, 200);
+    await expect(repository.appendRunActivity({ ...record(run, 1), at: at(10) }, 0)).rejects.toThrow();
+    await expect(repository.appendRunActivity({ ...record(run, 2), runId: uuid() }, 200)).rejects.toThrow();
+    const other = jobRecord({ state: 'failed' });
+    await repository.createJob(other);
+    await expect(repository.appendRunActivity({ ...record(run, 2), jobId: other.id }, 200)).rejects.toThrow();
+    expect(await repository.listRunActivityForRun(jobId, run.id, 200)).toEqual([original]);
+    expect(await repository.listRunActivityForRun(other.id, run.id, 200)).toEqual([]);
+    expect((await repository.listRuns(jobId))[0]?.activity).toEqual({ visibility: null, count: 1, lastActivityAt: at(1) });
+  });
+
+  it('preserves activity columns across saveRun and scopes visibility to job and run', async () => {
+    await repository.setRunActivityVisibility(jobId, run.id, 'partial');
+    await repository.appendRunActivity(record(run, 1), 200);
+    await repository.setRunActivityVisibility(uuid(), run.id, 'full');
+    await repository.saveRun({ ...run, state: 'completed', activity: { visibility: 'full', count: 0, lastActivityAt: null } });
+    expect((await repository.listRuns(jobId))[0]).toMatchObject({ state: 'completed', activity: { visibility: 'partial', count: 1, lastActivityAt: at(1) } });
+  });
+
+  it('returns newest N per run ordered by run then ascending sequence', async () => {
+    const second = { ...run, id: uuid(), role: 'verifier' as const };
+    await repository.saveRun(second);
+    for (const current of [run, second]) {
+      for (let seq = 1; seq <= 4; seq++) await repository.appendRunActivity(record(current, seq), 200);
+    }
+    const runs = [run, second].sort((a, b) => a.id.localeCompare(b.id));
+    expect(await repository.listRunActivity(jobId, 2)).toEqual(runs.flatMap(current => [record(current, 3), record(current, 4)]));
+    expect(await repository.listRunActivityForRun(jobId, run.id, 2)).toEqual([record(run, 3), record(run, 4)]);
+    expect(await repository.listRunActivityForRun(jobId, uuid(), 2)).toEqual([]);
+    expect(await repository.listRunActivity(uuid(), 2)).toEqual([]);
+    expect(await repository.listRunActivity(jobId, 0)).toEqual([]);
+  });
+
+  it('rejects payloads over the storage limit without changing bookkeeping', async () => {
+    await expect(repository.appendRunActivity({ ...record(run, 1), payload: { action: 'tool_other', tool: 'x'.repeat(2048) } }, 200)).rejects.toThrow();
+    expect(await repository.listRunActivityForRun(jobId, run.id, 200)).toEqual([]);
+    expect((await repository.listRuns(jobId))[0]?.activity).toEqual({ visibility: null, count: 0, lastActivityAt: null });
   });
 });

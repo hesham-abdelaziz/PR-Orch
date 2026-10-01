@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   ReviewEvent,
   ReviewJob,
+  RunRole,
   RunState,
 } from '@pr-orchestrator/contracts';
 import { Observable } from 'rxjs';
@@ -52,13 +53,32 @@ export class ReviewEventsService {
     this.emit(reviewId, { type: 'job.state_changed', payload: { state } }, isTerminal(state));
   }
 
+  /**
+   * Run state change for a reviewer or (role `verifier`) the main verifier.
+   * `details` carries the role plus the run's start and completion, so clients
+   * can show elapsed time without a new snapshot.
+   */
   reviewerStateChanged(
     reviewId: string,
     runId: string,
     state: RunState,
     reviewer: ModelSelection,
+    details: { role?: RunRole; startedAt?: string | null; completedAt?: string | null } = {},
   ): void {
-    this.emit(reviewId, { type: 'reviewer.state_changed', payload: { runId, state, reviewer } }, false);
+    this.emit(
+      reviewId,
+      { type: 'reviewer.state_changed', payload: { runId, state, reviewer, role: details.role ?? 'reviewer', ...times(details) } },
+      false,
+    );
+  }
+
+  runActivity(reviewId: string, payload: Extract<ReviewEvent, { type: 'run.activity' }>['payload']): void {
+    this.emit(reviewId, { type: 'run.activity', payload }, false);
+  }
+
+  /** Liveness only; carries no activity and is never persisted. */
+  runHeartbeat(reviewId: string, runId: string, role: RunRole, at: string): void {
+    this.emit(reviewId, { type: 'run.heartbeat', payload: { runId, role, at } }, false);
   }
 
   warning(reviewId: string, code: string, message: string): void {
@@ -198,4 +218,11 @@ export class ReviewEventsService {
       if (this.queues.get(reviewId) === next) this.queues.delete(reviewId);
     });
   }
+}
+
+function times(details: { startedAt?: string | null; completedAt?: string | null }) {
+  return {
+    ...(details.startedAt === undefined ? {} : { startedAt: details.startedAt }),
+    ...(details.completedAt === undefined ? {} : { completedAt: details.completedAt }),
+  };
 }

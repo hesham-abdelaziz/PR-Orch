@@ -9,6 +9,12 @@ export interface ProcessRunRequest {
   maxStderrBytes: number;
   environment: Readonly<Record<string, string>>;
   signal: AbortSignal;
+  /**
+   * Receives every raw stdout chunk as it arrives, before the byte cap applies,
+   * so a streaming decoder can consume output the buffer would discard. A
+   * throwing callback is ignored: observers never affect the run.
+   */
+  onStdout?: (chunk: Buffer) => void;
 }
 
 export interface ProcessRunBase {

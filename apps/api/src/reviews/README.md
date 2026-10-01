@@ -34,9 +34,43 @@ Overall risk = highest verified severity or `clean`. There are no numeric scores
 | `GET /api/reviews/:reviewId` | 200 `ReviewJob` / 404. |
 | `POST /api/reviews/:reviewId/cancel` | 200 `ReviewJob` (`cancelling` or already terminal; idempotent) / 404. |
 | `GET /api/reviews/:reviewId/events` | SSE. Unnamed messages, `data` = JSON `ReviewEvent`, `id` = sequence. First message is always `job.snapshot`; stream completes after the terminal state. Sequences come from the persisted per-job counter (see *SSE sequences*). |
+| `GET /api/reviews/:reviewId/runs/:runId/activity` | 200 `RunActivityLog` (≤ 200 entries, oldest first) / 404 for an unknown review or run. |
 | `GET /api/reviews/:reviewId/report.md` | `text/markdown; charset=utf-8`, `attachment`, `nosniff`; 404 unless completed. |
 
 Authentication is the platform’s global guard; nothing here checks sessions.
+
+## Live run activity
+
+Every reviewer run and the main verifier run carry bounded, sanitized activity
+(`run-activity.recorder.ts`, contract types in `packages/contracts/src/activity.ts`).
+
+- **Kinds.** `provider` = an observation from the CLI's structured stream (see
+  `providers/README.md`); `lifecycle` = `attempt_started`, `process_started` (with
+  the run's visibility) and `attempt_ended` (`completed`, `invalid_output`,
+  `failed`, `timed_out`, `cancelled`); `notice` = `events_skipped` with a count.
+- **Heartbeats** are separate: while a provider attempt is in flight the
+  orchestrator emits `run.heartbeat` every 15 s (`heartbeatIntervalMs`). They are
+  kept in memory only (`run-liveness.service.ts`), shown as `lastHeartbeatAt`
+  while the run is `running`, never persisted, and never move `lastActivityAt`
+  (newest `provider` entry). A quiet provider is not marked failed or stalled.
+- **Order.** Each entry is validated against `RunActivitySchema`, persisted
+  (`appendRunActivity`), and only then emitted as `run.activity`; a storage error
+  drops the entry silently and never fails the review. A run's entries are
+  flushed before its final `reviewer.state_changed`. The verifier now emits
+  `reviewer.state_changed` too (`role: 'verifier'`, with `startedAt`/`completedAt`).
+- **Coalescing.** Identical consecutive provider observations within 2 s are
+  recorded once.
+- **Bounds.** Storage keeps the newest 200 entries per run
+  (`RUN_ACTIVITY_RETAINED_PER_RUN`; `activity_count`/`last_activity_at` survive
+  pruning, so `total` stays exact). Snapshots (`GET /api/reviews/:id`, SSE
+  `job.snapshot`) embed the newest 50 per run (`RUN_ACTIVITY_SNAPSHOT_PER_RUN`);
+  `GET /api/reviews/:id/runs/:runId/activity` returns all retained entries.
+  History rows carry no activity. Each stored payload is ≤ 2 KiB.
+- **Reconnects.** Entry ids are `${runId}:${seq}`. An entry persisted just before
+  a snapshot can also arrive as a live event afterwards; clients de-duplicate by
+  id (sequence rules already drop events ≤ the snapshot's sequence).
+- **Older reviews** have no rows: their runs show `visibility: null`, an empty
+  log and `total: 0`. Stored rows that no longer validate are skipped.
 
 ## Verified-finding checks
 
@@ -132,8 +166,7 @@ Startup: `ReviewOrchestratorService.onApplicationBootstrap` runs recovery (jobs 
 ## Shared-contract observations (no contract was changed)
 
 - No response schemas exist for cancel, history items/pages, or the empty `active` case; the engine returns `ReviewJob`, `{items,nextCursor}` and 204 respectively. Consider adding schemas in a later contract commit.
-- `ReviewJob.reviewers` lists reviewer runs only; the verifier’s run state is not exposed to clients.
-- SSE has no verifier events; verifier progress is visible only as `verifying`.
+- `ReviewJob.verifier` exposes the main verifier run; the verifier emits `reviewer.state_changed` (`role: 'verifier'`).
 
 ## Known limitations / deferred
 

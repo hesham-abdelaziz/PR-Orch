@@ -1,6 +1,9 @@
 import type {
+  ActivityTarget,
+  ActivityVisibility,
   AuthenticationState,
   ModelCatalog,
+  ProviderActivityAction,
   ProviderId,
   ReasoningEffort,
 } from '@pr-orchestrator/contracts';
@@ -56,6 +59,32 @@ export interface ProviderRunRequest {
   signal: AbortSignal;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  /** Receives normalized, sanitized activity while the provider runs. */
+  activity?: ProviderActivitySink;
+}
+
+/**
+ * One observable provider action. Built only from allowlisted fields of the
+ * CLI's structured event stream: never model text, prompts, tool output or
+ * command arguments. `target.path` is checkout-relative and validated.
+ */
+export interface ProviderActivityObservation {
+  action: ProviderActivityAction;
+  /** Allowlisted tool identifier, e.g. `Read`, `read_file`, `shell`. */
+  tool?: string;
+  target?: ActivityTarget;
+}
+
+/**
+ * Callbacks an adapter invokes during `runReview`. Implementations must not
+ * throw; adapters also guard every call so a sink can never fail a run.
+ */
+export interface ProviderActivitySink {
+  /** Called once per invocation, right before the process is spawned. */
+  visibility(visibility: ActivityVisibility): void;
+  activity(observation: ProviderActivityObservation): void;
+  /** Called after the process ends when malformed or oversized stream lines were ignored. */
+  skipped(count: number): void;
 }
 
 export type ProviderFailureKind =

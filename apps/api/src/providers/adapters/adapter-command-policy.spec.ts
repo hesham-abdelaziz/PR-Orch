@@ -16,7 +16,8 @@ describe('adapter command profiles', () => {
     expect(buildClaudeReviewArgs({ model: 'sonnet', schemaJson: SCHEMA })).toEqual([
       '-p',
       '--output-format',
-      'json',
+      'stream-json',
+      '--verbose',
       '--json-schema',
       SCHEMA,
       '--permission-mode',
@@ -81,6 +82,35 @@ describe('adapter command profiles', () => {
       '--model',
       'pro',
     ]);
+  });
+
+  it('requests JSONL event streams only when asked, keeping every read-only control', () => {
+    const codex = buildCodexReviewArgs({
+      model: 'my-model',
+      schemaPath: 'C:\\runs\\schema.json',
+      workspacePath: 'C:\\workspaces\\job-1',
+      stream: true,
+    });
+    expect(codex.slice(0, 11)).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'read-only',
+      '--ephemeral',
+      '--skip-git-repo-check',
+      '--color',
+      'never',
+      '--json',
+      '--output-schema',
+    ]);
+    expect(codex.at(-1)).toBe('-');
+    expect(() => assertCommandPolicy('codex', codex, 'Review this pull request carefully')).not.toThrow();
+
+    const gemini = buildGeminiReviewArgs({ model: 'pro', sandbox: false, stream: true });
+    expect(gemini).toEqual(['--approval-mode', 'plan', '--output-format', 'stream-json', '--model', 'pro']);
+    expect(() => assertCommandPolicy('gemini', gemini, 'Review this pull request carefully')).not.toThrow();
+    expect(buildGeminiReviewArgs({ model: 'pro', sandbox: false, stream: false })).toContain('json');
   });
 
   it('omits the model flag for the CLI-default sentinel', () => {

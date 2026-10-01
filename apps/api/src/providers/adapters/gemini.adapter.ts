@@ -3,6 +3,8 @@ import { homedir } from 'node:os';
 
 import type { AuthenticationState, ModelCatalog } from '@pr-orchestrator/contracts';
 
+import { GeminiStreamDecoder } from '../activity/gemini-stream.decoder.js';
+import type { ActivityEmitter, StreamDecoder } from '../activity/stream-decoder.js';
 import { buildModelCatalog } from '../model-catalog.service.js';
 import type { ProviderRunRequest, ResolvedExecutable } from '../provider-adapter.js';
 import { nodeFileSystem } from '../windows-cli-resolver.js';
@@ -36,6 +38,8 @@ export interface GeminiAdapterDependencies extends CliAdapterDependencies {
 
 export class GeminiAdapter extends BaseCliAdapter {
   readonly id = 'gemini' as const;
+  /** Set from `gemini --help`: true when `--output-format` offers `stream-json`. */
+  private streaming = false;
 
   constructor(private readonly geminiDependencies: GeminiAdapterDependencies) {
     super(geminiDependencies);
@@ -46,6 +50,7 @@ export class GeminiAdapter extends BaseCliAdapter {
   ): Promise<string | undefined> {
     const help = await this.probe(executable, ['--help']);
     const text = help.stdout;
+    this.streaming = text.includes('stream-json');
     if (!text.includes('--approval-mode') || !/\bplan\b/u.test(text)) {
       return 'This Gemini CLI does not offer `--approval-mode plan`, so it cannot run read-only. Update it with `npm install -g @google/gemini-cli`.';
     }
@@ -56,9 +61,14 @@ export class GeminiAdapter extends BaseCliAdapter {
     return undefined;
   }
 
-  protected override buildArguments(request: ProviderRunRequest): string[] {
+  protected override createStreamDecoder(emit: ActivityEmitter, maxFinalBytes: number): StreamDecoder | undefined {
+    return this.streaming ? new GeminiStreamDecoder(emit, maxFinalBytes) : undefined;
+  }
+
+  protected override buildArguments(request: ProviderRunRequest, stream: boolean): string[] {
     return buildGeminiReviewArgs({
       model: request.model,
+      stream,
       sandbox: this.geminiDependencies.sandboxAvailable?.() ?? false,
       readOnlyDirectories: request.readOnlyDirectories ?? [],
     });

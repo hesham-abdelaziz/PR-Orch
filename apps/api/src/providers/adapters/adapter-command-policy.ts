@@ -64,8 +64,12 @@ export function buildClaudeReviewArgs(input: {
 
   return [
     '-p',
+    // Streamed JSON events expose tool use while the run is in progress; the
+    // final `result` event is the same envelope `--output-format json` prints.
+    // `--verbose` is required by the CLI for stream-json in print mode.
     '--output-format',
-    'json',
+    'stream-json',
+    '--verbose',
     '--json-schema',
     input.schemaJson,
     '--permission-mode',
@@ -94,6 +98,8 @@ export function buildCodexReviewArgs(input: {
   workspacePath: string;
   /** Requested effort; absent or 'default' leaves the CLI's own setting. */
   reasoningEffort?: ReasoningEffort;
+  /** Emit JSONL events (`exec --json`) instead of the plain final message. */
+  stream?: boolean;
 }): string[] {
   const effort = explicitEffort('codex', input.reasoningEffort);
 
@@ -108,6 +114,7 @@ export function buildCodexReviewArgs(input: {
     '--skip-git-repo-check',
     '--color',
     'never',
+    ...(input.stream ? ['--json'] : []),
     '--output-schema',
     input.schemaPath,
     '--cd',
@@ -124,6 +131,8 @@ export function buildGeminiReviewArgs(input: {
   model: string;
   sandbox: boolean;
   readOnlyDirectories?: readonly string[];
+  /** Emit JSONL events (`stream-json`) instead of one final JSON envelope. */
+  stream?: boolean;
 }): string[] {
   const directories = input.readOnlyDirectories ?? [];
   if (directories.some((directory) => directory.includes(','))) {
@@ -134,7 +143,7 @@ export function buildGeminiReviewArgs(input: {
     '--approval-mode',
     'plan',
     '--output-format',
-    'json',
+    input.stream ? 'stream-json' : 'json',
     ...(input.sandbox ? ['--sandbox'] : []),
     ...(directories.length > 0 ? ['--include-directories', directories.join(',')] : []),
     ...modelArgs(input.model),

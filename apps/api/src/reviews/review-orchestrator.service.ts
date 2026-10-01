@@ -12,6 +12,8 @@ import {
 } from '@nestjs/common';
 import {
   CreateReviewRequestSchema,
+  RUN_ACTIVITY_SNAPSHOT_PER_RUN,
+  type ActivityOutcome,
   type CreateReviewRequest,
   type ModelSelection,
   type ReviewFinding,
@@ -31,6 +33,8 @@ import type { CandidateFindingRecord } from './entities/candidate-finding.entity
 import type { CoverageExclusion, JobPatch, ReviewJobRecord } from './entities/review-job.entity.js';
 import type { ReviewerRunRecord } from './entities/reviewer-run.entity.js';
 import { ReviewEventsService } from './review-events.service.js';
+import { RunActivityRecorder } from './run-activity.recorder.js';
+import { RunLivenessService } from './run-liveness.service.js';
 import { ActiveReviewExistsError, ReviewNotFoundError } from './review-errors.js';
 import { JobStateMachine, isTerminal } from './job-state-machine.js';
 import { toReviewJob } from './review-job.mapper.js';
@@ -83,7 +87,12 @@ export interface ReviewOrchestratorOptions {
   secretValues?: () => readonly string[];
   /** Read-only access to prepared checkouts for location and evidence checks. */
   checkoutInspectors?: CheckoutInspectorFactory;
+  /** Interval of process heartbeats while a provider runs; defaults to 15 s. */
+  heartbeatIntervalMs?: number;
 }
+
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+const FINISHED_RUN_STATES: ReadonlySet<RunState> = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
 
 /** The product-wide ceiling on concurrent reviewer processes. */
 export const MAX_REVIEWER_PROCESSES = 3;
@@ -139,6 +148,9 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private readonly scratchRoot: string;
   private readonly secretValues: () => readonly string[];
   private readonly checkoutInspectors: CheckoutInspectorFactory;
+  private readonly activity: RunActivityRecorder;
+  private readonly liveness: RunLivenessService;
+  private readonly heartbeatIntervalMs: number;
 
   constructor(
     @Inject(REVIEW_REPOSITORY) private readonly repository: ReviewRepository,
@@ -155,12 +167,16 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     @Inject(VerifierPromptBuilder) private readonly verifierPrompts: VerifierPromptBuilder,
     @Inject(CorrectionPromptBuilder) private readonly correctionPrompts: CorrectionPromptBuilder,
     @Optional() @Inject(REVIEW_ORCHESTRATOR_OPTIONS) options: ReviewOrchestratorOptions = {},
+    @Optional() @Inject(RunLivenessService) liveness: RunLivenessService = new RunLivenessService(),
   ) {
     this.clock = options.clock ?? (() => new Date());
     this.newId = options.idFactory ?? randomUUID;
     this.scratchRoot = options.scratchRoot ?? tmpdir();
     this.secretValues = options.secretValues ?? (() => collectSecretValues(process.env));
     this.checkoutInspectors = options.checkoutInspectors ?? new FileSystemCheckoutInspectorFactory();
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.liveness = liveness;
+    this.activity = new RunActivityRecorder(repository, events, liveness, this.clock);
     this.stateMachine = new JobStateMachine(repository, this.clock);
     this.lock = new ReviewLockService(repository, this.stateMachine);
   }
@@ -498,7 +514,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         signal: ctx.controller.signal,
         maxStdoutBytes: record.settings.maxStdoutBytes,
         maxStderrBytes: record.settings.maxStderrBytes,
-      });
+      }, { runId: run.id, attempt });
       run = { ...run, attempts: attempt };
 
       if (result.status !== 'completed') {
@@ -509,6 +525,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       log.push(`attempt ${attempt} stderr: ${boundedSnippet(result.stderr, MAX_STDERR_IN_LOG)}`);
 
       const parsed = this.parser.parseReviewer({ provider: selection.provider, rawOutput: result.rawOutput });
+      this.activity.attemptEnded(run.id, attempt, parsed.ok ? 'completed' : 'invalid_output');
       if (parsed.ok) {
         const { result: shaped, dropped } = this.normalizer.normalizeReviewer({
           reviewer: selection,
@@ -682,7 +699,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         signal: ctx.controller.signal,
         maxStdoutBytes: record.settings.maxStdoutBytes,
         maxStderrBytes: record.settings.maxStderrBytes,
-      });
+      }, { runId: run.id, attempt });
       run = { ...run, attempts: attempt };
       if (result.status !== 'completed') {
         log.push(...describeUnfinishedAttempt(attempt, result, record.settings.verifierTimeoutMs));
@@ -718,6 +735,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       let issues: string[];
       if (parsed.ok) {
         const assembled = await assembleWith(redactModelOutput(parsed.value, this.secretValues()));
+        this.activity.attemptEnded(run.id, attempt, assembled.ok ? 'completed' : 'invalid_output');
         if (assembled.ok) {
           await this.saveRun(run, { state: 'completed', completedAt: this.now(), sanitizedLog: this.makeLog(log) });
 
@@ -726,6 +744,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         issues = assembled.issues;
         log.push(`attempt ${attempt}: integrity violations: ${issues.length}`);
       } else {
+        this.activity.attemptEnded(run.id, attempt, 'invalid_output');
         issues = parsed.error.issues;
         log.push(describeCorrection(attempt, parsed.error));
       }
@@ -870,21 +889,36 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
   // ----------------------------------------------------------------- helpers
 
+  /**
+   * Runs one provider attempt. With `tracked`, the attempt is recorded as run
+   * activity: start and (unless it completed, which the caller classifies after
+   * parsing) its end, the adapter's observations, and a process heartbeat every
+   * `heartbeatIntervalMs` while it runs.
+   */
   private async invoke(
     ctx: Runtime,
     adapter: ProviderAdapter,
     provider: ModelSelection['provider'],
     request: ProviderRunRequest,
+    tracked?: { runId: string; attempt: number },
   ): Promise<ProviderRunResult> {
     ctx.activeRuns.set(request.runId, adapter);
-    try {
-      if (request.signal.aborted) {
-        return { provider, runId: request.runId, durationMs: 0, status: 'cancelled' };
-      }
+    let heartbeat: NodeJS.Timeout | undefined;
+    if (tracked) {
+      this.activity.attemptStarted(tracked.runId, tracked.attempt);
+      heartbeat = setInterval(() => this.activity.heartbeat(tracked.runId), this.heartbeatIntervalMs);
+      heartbeat.unref();
+    }
 
-      return await adapter.runReview(request);
+    let result: ProviderRunResult;
+    try {
+      result = request.signal.aborted
+        ? { provider, runId: request.runId, durationMs: 0, status: 'cancelled' }
+        : await adapter.runReview(
+            tracked ? { ...request, activity: this.activity.sink(tracked.runId, tracked.attempt) } : request,
+          );
     } catch (error) {
-      return {
+      result = {
         provider,
         runId: request.runId,
         durationMs: 0,
@@ -892,8 +926,15 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         failure: { kind: 'process', message: this.safeText(error, 300) },
       };
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       ctx.activeRuns.delete(request.runId);
     }
+
+    if (tracked && result.status !== 'completed') {
+      this.activity.attemptEnded(tracked.runId, tracked.attempt, result.status satisfies ActivityOutcome);
+    }
+
+    return result;
   }
 
   private async pool<T, R>(items: readonly T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -929,9 +970,19 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
   private async saveRun(run: ReviewerRunRecord, patch: Partial<ReviewerRunRecord>): Promise<ReviewerRunRecord> {
     const next = { ...run, ...patch };
+    const changed = patch.state !== undefined && patch.state !== run.state;
+    // A finished run's activity is fully persisted and announced before its final state.
+    if (changed && FINISHED_RUN_STATES.has(patch.state as RunState)) await this.activity.finish(run.id);
     await this.repository.saveRun(next);
-    if (run.role === 'reviewer' && patch.state !== undefined && patch.state !== run.state) {
-      this.events.reviewerStateChanged(run.jobId, run.id, patch.state, run.selection);
+    if (changed && patch.state === 'running') {
+      this.activity.begin({ jobId: run.jobId, runId: run.id, role: run.role }, run.activity);
+    }
+    if (changed) {
+      this.events.reviewerStateChanged(run.jobId, run.id, patch.state as RunState, run.selection, {
+        role: run.role,
+        startedAt: next.startedAt,
+        completedAt: next.completedAt,
+      });
     }
 
     return next;
@@ -1009,7 +1060,10 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async snapshot(reviewId: string): Promise<ReviewJob> {
     const record = await this.mustGet(reviewId);
 
-    return toReviewJob(record, await this.repository.listRuns(reviewId));
+    return toReviewJob(record, await this.repository.listRuns(reviewId), {
+      entries: await this.repository.listRunActivity(reviewId, RUN_ACTIVITY_SNAPSHOT_PER_RUN),
+      lastHeartbeat: (runId) => this.liveness.lastHeartbeat(runId),
+    });
   }
 }
 

@@ -1,5 +1,7 @@
 import type { AuthenticationState, ModelCatalog, ReasoningEffort } from '@pr-orchestrator/contracts';
 
+import { CodexStreamDecoder } from '../activity/codex-stream.decoder.js';
+import type { ActivityEmitter, StreamDecoder } from '../activity/stream-decoder.js';
 import { buildModelCatalog, type CatalogModel } from '../model-catalog.service.js';
 import type { ProviderRunRequest, ResolvedExecutable } from '../provider-adapter.js';
 import { buildCodexReviewArgs } from './adapter-command-policy.js';
@@ -35,6 +37,8 @@ export interface CodexAdapterDependencies extends CliAdapterDependencies {
 
 export class CodexAdapter extends BaseCliAdapter {
   readonly id = 'codex' as const;
+  /** Set from `codex exec --help`: true when `--json` (JSONL events) is offered. */
+  private streaming = false;
 
   constructor(private readonly codexDependencies: CodexAdapterDependencies) {
     super(codexDependencies);
@@ -48,6 +52,8 @@ export class CodexAdapter extends BaseCliAdapter {
       this.probe(executable, ['exec', '--help']),
     ]);
 
+    this.streaming = /(^|\s)--json(?![\w-])/mu.test(exec.stdout);
+
     const missing: string[] = [];
     if (!global.stdout.includes('--ask-for-approval')) missing.push('--ask-for-approval');
     for (const flag of REQUIRED_EXEC_FLAGS) {
@@ -59,11 +65,16 @@ export class CodexAdapter extends BaseCliAdapter {
       : `This Codex CLI lacks required read-only review options (${missing.join(', ')}). Update it with \`npm install -g @openai/codex\` or the native installer.`;
   }
 
-  protected override buildArguments(request: ProviderRunRequest): string[] {
+  protected override createStreamDecoder(emit: ActivityEmitter, maxFinalBytes: number): StreamDecoder | undefined {
+    return this.streaming ? new CodexStreamDecoder(emit, maxFinalBytes) : undefined;
+  }
+
+  protected override buildArguments(request: ProviderRunRequest, stream: boolean): string[] {
     return buildCodexReviewArgs({
       model: request.model,
       schemaPath: request.outputSchemaPath,
       workspacePath: request.workspacePath,
+      stream,
       ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
     });
   }

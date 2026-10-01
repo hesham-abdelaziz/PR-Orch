@@ -264,3 +264,52 @@ describe('reasoning effort contracts and compatibility', () => {
     ).toThrowError(/Model "nonexistent" is not offered/);
   });
 });
+import { RunActivitySchema, RunActivitySummarySchema, ReviewJobSchema } from './index.js';
+
+describe('run activity contracts', () => {
+  const runId = '2f5b02de-54d7-4e45-9227-684754f40ee8';
+  const at = '2026-09-29T12:00:00.000Z';
+  const entry = { id: `${runId}:1`, runId, seq: 1, at, kind: 'provider', action: 'reading_file', tool: 'Read', target: { path: 'src/auth.ts', startLine: 1, endLine: 2 } };
+  const summary = { visibility: 'full', recent: [entry], current: entry, lastActivityAt: at, lastHeartbeatAt: null, total: 1 };
+  const base = { reviewId: runId, sequence: 1, emittedAt: at };
+
+  it('round-trips activity and heartbeat events for both roles', () => {
+    for (const role of ['reviewer', 'verifier']) {
+      for (const event of [
+        { ...base, type: 'run.activity', payload: { runId, role, activity: entry, visibility: 'full', total: 1, lastActivityAt: at } },
+        { ...base, type: 'run.heartbeat', payload: { runId, role, at } },
+        { ...base, type: 'reviewer.state_changed', payload: { runId, role, reviewer, state: 'running', startedAt: at, completedAt: null } },
+      ]) expect(ReviewEventSchema.parse(event)).toEqual(event);
+    }
+  });
+
+  it('accepts legacy jobs and state events and optional verifier activity', () => {
+    const run = { id: runId, selection: reviewer, state: 'queued', startedAt: null, completedAt: null, warning: null };
+    const job = {
+      id: runId, state: 'queued', main: reviewer, reviewers: [run], standards: null, warnings: [],
+      createdAt: at, updatedAt: at, completedAt: null,
+      pullRequest: { url: 'https://example.com/pr/1', organization: 'org', project: 'project', repository: 'repo', pullRequestId: 1, title: 'PR', author: { id: 'user', displayName: 'User' }, sourceBranch: 'feature', targetBranch: 'main', sourceCommit: 'abcdef0', targetCommit: 'abcdef1', changedFiles: 1, additions: 1, deletions: 0, updatedAt: at },
+    };
+    expect(ReviewJobSchema.parse(job)).toEqual(job);
+    expect(ReviewJobSchema.parse({ ...job, verifier: { ...run, activity: summary } }).verifier?.activity).toEqual(summary);
+    const event = { ...base, type: 'reviewer.state_changed', payload: { runId, reviewer, state: 'queued' } };
+    expect(ReviewEventSchema.parse(event)).toEqual(event);
+  });
+
+  it.each([
+    { kind: 'lifecycle' }, { id: 'wrong' },
+    ...['/abs/file', 'C:/file', '../file', 'src/../file', 'src\\file'].map(path => ({ target: { path } })),
+    { target: { path: 'src/file', startLine: 2, endLine: 1 } },
+    { target: { path: 'src/file', endLine: 1 } },
+    ...['prompt', 'command', 'output'].map(key => ({ [key]: 'secret' })),
+    { target: { path: 'src/file', output: 'secret' } },
+    ...['Read file', 'shell;whoami', 'shell|cat', 'shell$(id)'].map(tool => ({ tool })),
+  ])('rejects invalid or unsanitized entry %j', patch => {
+    expect(RunActivitySchema.safeParse({ ...entry, ...patch }).success).toBe(false);
+  });
+
+  it('bounds snapshots to 50 entries', () => {
+    expect(RunActivitySummarySchema.parse(summary)).toEqual(summary);
+    expect(RunActivitySummarySchema.safeParse({ ...summary, recent: Array(51).fill(entry) }).success).toBe(false);
+  });
+});

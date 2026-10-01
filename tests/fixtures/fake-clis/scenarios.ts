@@ -105,7 +105,35 @@ export interface FakeProviderBehavior {
   /** Final stderr line for `banner-then-error`. */
   fatalMessage?: string;
   help?: Partial<Record<FakeProviderName | 'codex-exec', string>>;
+  /** Raw stdout lines inserted early into a streamed run (malformed or oversized events). */
+  streamPrelude?: string[];
 }
+
+/**
+ * Help texts advertising the structured event streams (`codex exec --json`,
+ * `gemini --output-format stream-json`), so adapters choose streaming mode.
+ * Claude always streams. The default fake help advertises neither.
+ */
+export const STREAMING_HELP: NonNullable<FakeProviderBehavior['help']> = {
+  codex: ['Usage: codex [OPTIONS] [PROMPT]', '  -c, --config <key=value>', '  -a, --ask-for-approval <POLICY>', '  -s, --sandbox <MODE>', ''].join('\n'),
+  'codex-exec': [
+    'Usage: codex exec [OPTIONS] [PROMPT]',
+    '  -c, --config <key=value>',
+    '  -s, --sandbox <MODE>',
+    '  --ephemeral',
+    '  --json',
+    '  --output-schema <FILE>',
+    '  -C, --cd <DIR>',
+    '',
+  ].join('\n'),
+  gemini: [
+    'Usage: gemini [options]',
+    '  --approval-mode  choices: default, auto_edit, yolo, plan',
+    '  -s, --sandbox',
+    '  -o, --output-format  [choices: "text", "json", "stream-json"]',
+    '',
+  ].join('\n'),
+};
 
 export const FAKE_PROVIDER_MODULE_URL = new URL(
   './fake-provider.mjs',

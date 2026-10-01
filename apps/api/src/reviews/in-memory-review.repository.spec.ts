@@ -171,7 +171,9 @@ describe('InMemoryReviewRepository', () => {
     await repository.saveRun({ ...run, state: 'running' });
     await repository.saveCandidates([{ id: 'c1', jobId: 'job-1', runId: run.id, finding: finding() }]);
 
-    expect(await repository.listRuns('job-1')).toEqual([{ ...run, state: 'running' }]);
+    expect(await repository.listRuns('job-1')).toEqual([
+      { ...run, state: 'running', activity: { visibility: null, count: 0, lastActivityAt: null } },
+    ]);
     expect(await repository.listCandidates('job-1')).toHaveLength(1);
     expect(await repository.listCandidates('other')).toHaveLength(0);
   });
@@ -282,5 +284,60 @@ describe('InMemoryReviewRepository event sequence', () => {
 
     expect(await repository.getEventSequence(uuid())).toBeNull();
     expect(await repository.allocateEventSequence(uuid())).toBeNull();
+  });
+});
+
+describe('InMemoryReviewRepository run activity', () => {
+  const run = {
+    id: '00000000-0000-4000-8000-0000000000b1',
+    jobId: 'job-a',
+    role: 'reviewer' as const,
+    selection: { provider: 'claude' as const, model: 'm' },
+    state: 'running' as const,
+    startedAt: null,
+    completedAt: null,
+    warning: null,
+    attempts: 0,
+    sanitizedLog: '',
+    result: null,
+  };
+  const entry = (seq: number, kind: 'provider' | 'lifecycle' = 'provider') => ({
+    jobId: run.jobId,
+    runId: run.id,
+    seq,
+    at: new Date(Date.UTC(2026, 9, 1, 0, 0, seq)).toISOString(),
+    kind,
+    payload: kind === 'provider' ? { action: 'thinking' as const } : { action: 'attempt_started' as const, attempt: 1 },
+  });
+
+  it('prunes to the newest entries while count and lastActivityAt survive', async () => {
+    const repository = new InMemoryReviewRepository();
+    await repository.saveRun(run);
+
+    for (let seq = 1; seq <= 205; seq += 1) await repository.appendRunActivity(entry(seq), 200);
+    await repository.appendRunActivity(entry(206, 'lifecycle'), 200);
+
+    const rows = await repository.listRunActivityForRun(run.jobId, run.id, 500);
+    expect(rows).toHaveLength(200);
+    expect(rows[0]?.seq).toBe(7);
+    expect(rows.at(-1)?.seq).toBe(206);
+    const [listed] = await repository.listRuns(run.jobId);
+    expect(listed?.activity).toEqual({ visibility: null, count: 206, lastActivityAt: entry(205).at });
+    expect(await repository.listRunActivity(run.jobId, 3)).toHaveLength(3);
+  });
+
+  it('rejects duplicates and unknown runs, and saveRun never resets the bookkeeping', async () => {
+    const repository = new InMemoryReviewRepository();
+    await repository.saveRun(run);
+    await repository.appendRunActivity(entry(1), 200);
+    await repository.setRunActivityVisibility(run.jobId, run.id, 'partial');
+
+    await expect(repository.appendRunActivity(entry(1), 200)).rejects.toThrow();
+    await expect(repository.appendRunActivity({ ...entry(2), jobId: 'other-job' }, 200)).rejects.toThrow();
+    await repository.saveRun({ ...run, state: 'completed', activity: { visibility: null, count: 0, lastActivityAt: null } });
+
+    const [listed] = await repository.listRuns(run.jobId);
+    expect(listed?.activity).toEqual({ visibility: 'partial', count: 1, lastActivityAt: entry(1).at });
+    expect(await repository.listRunActivityForRun('other-job', run.id, 10)).toEqual([]);
   });
 });

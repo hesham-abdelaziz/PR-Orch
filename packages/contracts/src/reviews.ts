@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ActivityVisibilitySchema, RunActivitySchema, RunActivitySummarySchema, RunRoleSchema } from './activity.js';
 
 import { PullRequestSummarySchema } from './pull-requests.js';
 import { ModelSelectionSchema } from './providers.js';
@@ -57,6 +58,7 @@ export const ReviewerRunSchema = z.strictObject({
   startedAt: z.string().datetime().nullable(),
   completedAt: z.string().datetime().nullable(),
   warning: z.string().trim().min(1).max(1_000).nullable(),
+  activity: RunActivitySummarySchema.optional(),
 });
 
 export const ReviewJobSchema = z.strictObject({
@@ -65,6 +67,7 @@ export const ReviewJobSchema = z.strictObject({
   pullRequest: PullRequestSummarySchema,
   main: ModelSelectionSchema,
   reviewers: z.array(ReviewerRunSchema).min(1).max(8),
+  verifier: ReviewerRunSchema.optional(),
   standards: StandardsMetadataSchema.nullable(),
   warnings: z.array(z.string().trim().min(1).max(1_000)).max(100),
   createdAt: z.string().datetime(),
@@ -79,6 +82,27 @@ const ReviewEventBaseShape = {
 };
 
 export const ReviewEventSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    ...ReviewEventBaseShape,
+    type: z.literal('run.activity'),
+    payload: z.strictObject({
+      runId: z.string().uuid(),
+      role: RunRoleSchema,
+      activity: RunActivitySchema,
+      visibility: ActivityVisibilitySchema.nullable(),
+      total: z.number().int().nonnegative(),
+      lastActivityAt: z.string().datetime().nullable(),
+    }),
+  }),
+  z.strictObject({
+    ...ReviewEventBaseShape,
+    type: z.literal('run.heartbeat'),
+    payload: z.strictObject({
+      runId: z.string().uuid(),
+      role: RunRoleSchema,
+      at: z.string().datetime(),
+    }),
+  }),
   z.strictObject({
     ...ReviewEventBaseShape,
     type: z.literal('job.snapshot'),
@@ -96,6 +120,9 @@ export const ReviewEventSchema = z.discriminatedUnion('type', [
       runId: z.string().uuid(),
       state: RunStateSchema,
       reviewer: ModelSelectionSchema,
+      role: RunRoleSchema.optional(),
+      startedAt: z.string().datetime().nullable().optional(),
+      completedAt: z.string().datetime().nullable().optional(),
     }),
   }),
   z.strictObject({
