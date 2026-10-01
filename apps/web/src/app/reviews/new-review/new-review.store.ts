@@ -156,6 +156,12 @@ export class NewReviewStore {
     return true;
   }
 
+  updateReviewerSelection(index: number, selection: ModelSelection): void {
+    this.reviewerSelections.update((list) =>
+      list.map((item, idx) => (idx === index ? selection : item)),
+    );
+  }
+
   removeReviewer(index: number): void {
     if (this.reviewerSelections().length <= 1) {
       return;

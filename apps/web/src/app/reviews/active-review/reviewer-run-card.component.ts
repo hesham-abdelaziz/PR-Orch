@@ -1,9 +1,14 @@
-import { Component, Input } from '@angular/core';
+﻿import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ReviewJob } from '@pr-orchestrator/contracts';
 import { SanitizedLogComponent } from './sanitized-log.component';
 
-export type ReviewerRun = ReviewJob['reviewers'][number];
+export type ReviewerRun = ReviewJob['reviewers'][number] & {
+  attempts?: number;
+  role?: string;
+  sanitizedLog?: string | null;
+  exitCode?: number | null;
+};
 
 @Component({
   selector: 'app-reviewer-run-card',
@@ -19,47 +24,54 @@ export type ReviewerRun = ReviewJob['reviewers'][number];
               <span class="model-name font-mono">{{ run.selection.model }}</span>
               <span class="provider-badge font-mono">{{ run.selection.provider | uppercase }}</span>
             </div>
-            <span class="role-desc">Parallel Reviewer Unit</span>
+            <span class="role-desc">{{ isVerifier ? 'Main Verifier Unit' : 'Parallel Reviewer Unit' }}</span>
           </div>
         </div>
 
         <div class="state-container">
-          @switch (run.state) {
-            @case ('running') {
-              <span class="badge badge-running font-mono">
-                <span class="pulse-dot"></span>
-                <span>RUNNING</span>
-              </span>
-            }
-            @case ('completed') {
-              <span class="badge badge-completed font-mono">
-                <span>✓</span>
-                <span>COMPLETED</span>
-              </span>
-            }
-            @case ('failed') {
-              <span class="badge badge-failed font-mono">
-                <span>✕</span>
-                <span>FAILED</span>
-              </span>
-            }
-            @case ('timed_out') {
-              <span class="badge badge-timeout font-mono">
-                <span>⏱</span>
-                <span>TIMED OUT</span>
-              </span>
-            }
-            @case ('cancelled') {
-              <span class="badge badge-cancelled font-mono">
-                <span>⊘</span>
-                <span>CANCELLED</span>
-              </span>
-            }
-            @default {
-              <span class="badge badge-queued font-mono">
-                <span>⋯</span>
-                <span>QUEUED</span>
-              </span>
+          @if (isVerifierNotRun) {
+            <span class="badge badge-not-run font-mono">
+              <span>⊘</span>
+              <span>Not run</span>
+            </span>
+          } @else {
+            @switch (run.state) {
+              @case ('running') {
+                <span class="badge badge-running font-mono">
+                  <span class="pulse-dot"></span>
+                  <span>RUNNING</span>
+                </span>
+              }
+              @case ('completed') {
+                <span class="badge badge-completed font-mono">
+                  <span>✓</span>
+                  <span>COMPLETED</span>
+                </span>
+              }
+              @case ('failed') {
+                <span class="badge badge-failed font-mono">
+                  <span>✕</span>
+                  <span>FAILED</span>
+                </span>
+              }
+              @case ('timed_out') {
+                <span class="badge badge-timeout font-mono">
+                  <span>⏱</span>
+                  <span>TIMED OUT</span>
+                </span>
+              }
+              @case ('cancelled') {
+                <span class="badge badge-cancelled font-mono">
+                  <span>⊘</span>
+                  <span>CANCELLED</span>
+                </span>
+              }
+              @default {
+                <span class="badge badge-queued font-mono">
+                  <span>⋯</span>
+                  <span>QUEUED</span>
+                </span>
+              }
             }
           }
         </div>
@@ -74,8 +86,8 @@ export type ReviewerRun = ReviewJob['reviewers'][number];
 
       <!-- Collapsed sanitized log -->
       <app-sanitized-log
-        [title]="'Sanitized Reviewer Log (' + run.selection.model + ')'"
-        [content]="mockSanitizedLog"
+        [title]="logTitle"
+        [content]="logContent"
         [isOpen]="false"
       />
     </div>
@@ -211,6 +223,12 @@ export type ReviewerRun = ReviewJob['reviewers'][number];
       border: 1px solid $border-subtle;
     }
 
+    .badge-not-run {
+      background-color: $bg-surface-3;
+      color: $text-muted;
+      border: 1px solid $border-subtle;
+    }
+
     .badge-queued {
       background-color: $bg-surface-3;
       color: $text-secondary;
@@ -236,7 +254,34 @@ export type ReviewerRun = ReviewJob['reviewers'][number];
 export class ReviewerRunCardComponent {
   @Input({ required: true }) run!: ReviewerRun;
 
-  get mockSanitizedLog(): string {
-    return `[orchestrator:init] Workspace prepared for reviewer ${this.run.selection.model}\n[cli:exec] Spawning ${this.run.selection.provider} in isolated temp directory\n[cli:status] Execution state: ${this.run.state}\n[orchestrator:redact] Tokens and filesystem paths sanitized`;
+  get isVerifier(): boolean {
+    return (this.run as any).role === 'verifier';
+  }
+
+  get isVerifierNotRun(): boolean {
+    const r = this.run as any;
+    return (
+      r.state === 'cancelled' &&
+      (r.attempts === 0 || r.role === 'verifier' || r.warning === 'Not run because the review failed.')
+    );
+  }
+
+  get logTitle(): string {
+    const typeLabel = this.isVerifier ? 'Verifier' : 'Reviewer';
+    return `Sanitized ${typeLabel} Log (${this.run.selection.model})`;
+  }
+
+  get logContent(): string {
+    if (this.isVerifierNotRun) {
+      return 'Not run';
+    }
+    const r = this.run as any;
+    if (r.sanitizedLog) {
+      return r.sanitizedLog;
+    }
+    if (this.run.warning) {
+      return this.run.warning;
+    }
+    return 'No process output captured.';
   }
 }

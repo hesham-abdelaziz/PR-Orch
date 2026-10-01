@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+﻿import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { StageInfo } from './active-review.store';
 
@@ -31,6 +31,15 @@ import { StageInfo } from './active-review.store';
                   }
                   @case ('cancelled') {
                     <span class="status-glyph cancelled">⊘</span>
+                  }
+                  @case ('not_run') {
+                    <span class="status-glyph not-run">⊘</span>
+                  }
+                  @case ('skipped') {
+                    <span class="status-glyph skipped">⊘</span>
+                  }
+                  @case ('unknown') {
+                    <span class="status-glyph unknown">?</span>
                   }
                   @default {
                     <span class="status-glyph pending">⋯</span>
@@ -113,6 +122,16 @@ import { StageInfo } from './active-review.store';
         border-color: rgba(248, 81, 73, 0.3);
       }
 
+      &.status-not_run, &.status-skipped {
+        opacity: 0.45;
+        border-color: $border-subtle;
+      }
+
+      &.status-unknown {
+        opacity: 0.6;
+        border-color: rgba(245, 158, 11, 0.3);
+      }
+
       &.status-pending {
         opacity: 0.6;
       }
@@ -138,6 +157,8 @@ import { StageInfo } from './active-review.store';
       &.running { color: $accent-primary; animation: blink 1s infinite alternate; }
       &.failed { color: $severity-critical; }
       &.cancelled { color: $text-muted; }
+      &.not-run, &.skipped { color: $text-muted; }
+      &.unknown { color: $severity-medium; }
       &.pending { color: $text-muted; }
     }
 

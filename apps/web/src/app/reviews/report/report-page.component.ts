@@ -22,7 +22,7 @@ import { FindingCardComponent } from './finding-card.component';
 import { PipelineStageListComponent } from '../active-review/pipeline-stage-list.component';
 import { ReviewerRunCardComponent } from '../active-review/reviewer-run-card.component';
 import { ReviewWarningListComponent } from '../active-review/review-warning-list.component';
-import { StageInfo, StageKey, StageStatus } from '../active-review/active-review.store';
+import { StageInfo, StageKey, StageStatus, calculateStageStatuses } from '../active-review/active-review.store';
 
 const SEVERITY_WEIGHT: Record<string, number> = {
   critical: 4,
@@ -205,7 +205,7 @@ const SEVERITY_WEIGHT: Record<string, number> = {
             <span class="banner-icon">⚠</span>
             <div class="banner-content">
               <strong>Review Pipeline Execution Failed</strong>
-              <p>The review orchestration pipeline encountered a failure during execution.</p>
+              <p>{{ failureWarning() || 'The review orchestration pipeline encountered a failure during execution.' }}</p>
               @if (failedStage()) {
                 <div class="failure-detail">
                   <span class="detail-label">Failed Stage:</span>
@@ -879,79 +879,52 @@ export class ReportPageComponent implements OnInit, OnDestroy {
     return 'FAILED TO LOAD REPORT';
   });
 
-  readonly stageStatuses = computed<StageInfo[]>(() => {
-    const state = this.job()?.state ?? 'queued';
-
-    const getStatus = (target: StageKey): StageStatus => {
-      if (state === 'completed') return 'completed';
-      if (state === 'cancelled') return 'cancelled';
-      if (state === 'failed') {
-        const reviewers = this.job()?.reviewers ?? [];
-        const hasFailedReviewer = reviewers.some((r) => r.state === 'failed' || r.state === 'timed_out');
-        if (target === 'reviewers' && hasFailedReviewer) return 'failed';
-        if (target === 'verify' && !hasFailedReviewer) return 'failed';
-        if (['validate', 'checkout', 'detect', 'standards'].includes(target)) return 'completed';
-        if (target === 'reviewers') return hasFailedReviewer ? 'failed' : 'completed';
-        return 'failed';
+  readonly failureWarning = computed<string | null>(() => {
+    const ws = this.warnings();
+    for (let i = ws.length - 1; i >= 0; i--) {
+      if (/^Failed during/i.test(ws[i])) {
+        return ws[i];
       }
-
-      switch (target) {
-        case 'validate':
-          return state === 'queued' ? 'running' : 'completed';
-        case 'checkout':
-          if (state === 'queued') return 'pending';
-          if (state === 'preparing') return 'running';
-          return 'completed';
-        case 'detect':
-          if (state === 'queued' || state === 'preparing') return state === 'preparing' ? 'running' : 'pending';
-          return 'completed';
-        case 'standards':
-          if (state === 'queued' || state === 'preparing') return state === 'preparing' ? 'running' : 'pending';
-          return 'completed';
-        case 'reviewers':
-          if (['queued', 'preparing'].includes(state)) return 'pending';
-          if (state === 'reviewing') return 'running';
-          return 'completed';
-        case 'verify':
-          if (['queued', 'preparing', 'reviewing'].includes(state)) return 'pending';
-          if (state === 'verifying') return 'running';
-          return 'completed';
-        case 'report':
-          if (['queued', 'preparing', 'reviewing', 'verifying'].includes(state)) return 'pending';
-          if (state === 'rendering') return 'running';
-          return 'completed';
-        case 'cleanup':
-          return 'pending';
-        default:
-          return 'pending';
-      }
-    };
-
-    return [
-      { key: 'validate', step: '01', name: 'VALIDATE', desc: 'Azure PR Metadata', status: getStatus('validate') },
-      { key: 'checkout', step: '02', name: 'CHECKOUT', desc: 'Isolated Sandbox', status: getStatus('checkout') },
-      { key: 'detect', step: '03', name: 'DETECT', desc: 'Repo Frameworks', status: getStatus('detect') },
-      { key: 'standards', step: '04', name: 'STANDARDS', desc: 'Load Security Rules', status: getStatus('standards') },
-      { key: 'reviewers', step: '05', name: 'REVIEWERS', desc: 'Parallel Models', status: getStatus('reviewers') },
-      { key: 'verify', step: '06', name: 'VERIFY', desc: 'Main Synthesis', status: getStatus('verify') },
-      { key: 'report', step: '07', name: 'REPORT', desc: 'Render Markdown', status: getStatus('report') },
-      { key: 'cleanup', step: '08', name: 'CLEANUP', desc: 'Temp Workspace Purge', status: getStatus('cleanup') },
-    ];
+    }
+    return null;
   });
 
+  readonly stageStatuses = computed<StageInfo[]>(() => {
+    return calculateStageStatuses(this.job(), this.warnings());
+  });
+
+  private routeSubscription: Subscription | null = null;
+
   ngOnInit(): void {
-    this.loadReportData();
+    if (this.route.paramMap && typeof (this.route.paramMap as any).subscribe === 'function') {
+      this.routeSubscription = this.route.paramMap.subscribe((params) => {
+        const reviewId = params?.get?.('reviewId');
+        if (reviewId) {
+          this.loadReportData(reviewId);
+        }
+      });
+    }
+
+    const snapshotId = this.route.snapshot?.paramMap?.get('reviewId');
+    if (snapshotId && !this.job() && !this.loading()) {
+      this.loadReportData(snapshotId);
+    }
   }
 
   ngOnDestroy(): void {
+    if (this.routeSubscription) {
+      this.routeSubscription.unsubscribe();
+      this.routeSubscription = null;
+    }
     this.disconnectEvents();
   }
 
-  async loadReportData(): Promise<void> {
-    const reviewId = this.route.snapshot.paramMap.get('reviewId');
+  async loadReportData(id?: string): Promise<void> {
+    const reviewId = id ?? this.route.snapshot?.paramMap?.get('reviewId');
     if (!reviewId) {
       this.error.set('No review ID provided');
       this.errorType.set('generic');
+      this.loading.set(false);
       return;
     }
 
@@ -961,6 +934,11 @@ export class ReportPageComponent implements OnInit, OnDestroy {
     this.error.set(null);
     this.errorType.set(null);
     this.isDataConsistencyError.set(false);
+
+    if (this.job()?.id !== reviewId) {
+      this.job.set(null);
+      this.report.set(null);
+    }
 
     // Non-blocking query to see if another job is active on backend
     this.checkActiveBackendJob(reviewId);
@@ -1101,7 +1079,7 @@ export class ReportPageComponent implements OnInit, OnDestroy {
         this.job.set(event.payload.job);
         if (event.payload.job.state === 'completed') {
           this.disconnectEvents();
-          this.loadReportData();
+          this.loadReportData(event.payload.job.id);
         } else if (['failed', 'cancelled'].includes(event.payload.job.state)) {
           this.disconnectEvents();
         }
@@ -1111,7 +1089,7 @@ export class ReportPageComponent implements OnInit, OnDestroy {
         this.job.update((current) => (current ? { ...current, state: event.payload.state } : null));
         if (event.payload.state === 'completed') {
           this.disconnectEvents();
-          this.loadReportData();
+          this.loadReportData(this.job()?.id ?? event.reviewId);
         } else if (['failed', 'cancelled'].includes(event.payload.state)) {
           this.disconnectEvents();
         }

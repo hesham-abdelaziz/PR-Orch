@@ -1,4 +1,4 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+﻿import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { ActiveReviewPageComponent } from './active-review-page.component';
 import { ApiClientService } from '../../core/api/api-client.service';
@@ -109,7 +109,7 @@ describe('ActiveReviewPageComponent', () => {
     expect(el.querySelector('h1')?.textContent).toContain('PR #4819');
     expect(el.textContent).toContain('Refactor OAuth2 token exchange');
 
-    const cancelBtn = el.querySelector<HTMLButtonElement>('#cancel-review-btn');
+    const cancelBtn = el.querySelector('#cancel-review-btn') as HTMLButtonElement | null;
     expect(cancelBtn).toBeTruthy();
     expect(cancelBtn?.textContent).toContain('Cancel Review');
   });
@@ -149,7 +149,7 @@ describe('ActiveReviewPageComponent', () => {
 
   it('triggers cancellation workflow on cancel button click', async () => {
     const el = fixture.nativeElement as HTMLElement;
-    const cancelBtn = el.querySelector<HTMLButtonElement>('#cancel-review-btn');
+    const cancelBtn = el.querySelector('#cancel-review-btn') as HTMLButtonElement | null;
     expect(cancelBtn).toBeTruthy();
 
     cancelBtn?.click();
@@ -205,5 +205,83 @@ describe('ActiveReviewPageComponent', () => {
     expect(el.textContent).toContain('There are no reviews currently executing');
     expect(el.querySelector('a.btn-primary')?.textContent).toContain('Start New PR Review');
     expect(eventsServiceMock.connect).not.toHaveBeenCalled();
+  });
+
+  // Requirement Test 6: A banner with HTML-like text renders escaped
+  it('renders escaped plain text for a banner with HTML-like text', async () => {
+    const htmlLikeWarning = 'Failed during reviewing: <script>alert("xss")</script> <b>critical failure</b>';
+    const failedJobWithHtml: ReviewJob = {
+      ...mockActiveJob,
+      state: 'failed',
+      warnings: [htmlLikeWarning],
+      reviewers: [
+        { ...mockActiveJob.reviewers[0]!, state: 'failed' },
+        { ...mockActiveJob.reviewers[1]!, state: 'failed' },
+      ],
+    };
+
+    apiClientMock.request.mockResolvedValueOnce(failedJobWithHtml);
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const banner = fixture.nativeElement.querySelector('.failed-banner') as HTMLElement | null;
+    expect(banner).toBeTruthy();
+
+    // Verify it is rendered as text and NOT parsed into HTML elements
+    expect(banner?.querySelector('script')).toBeNull();
+    expect(banner?.querySelector('b')).toBeNull();
+
+    // Text content contains the verbatim string
+    expect(banner?.textContent).toContain('<script>alert("xss")</script>');
+    expect(banner?.textContent).toContain('<b>critical failure</b>');
+
+    // InnerHTML has escaped entities (&lt; &gt;)
+    expect(banner?.innerHTML).toContain('&lt;script&gt;');
+    expect(banner?.innerHTML).toContain('&lt;b&gt;');
+  });
+
+  it('displays truncated failure banner with expand control and excludes failure warning from notices list', async () => {
+    const longFailureReason =
+      'Failed during reviewing: All reviewers failed. codex rejected the selected model with exit code 1 and very long detailed output explaining that something went terribly wrong during containerization execution step 42; gemini exited with code 41.';
+    const noticeWarning = 'Detected framework guidance used as fallback standards.';
+
+    const failedJob: ReviewJob = {
+      ...mockActiveJob,
+      state: 'failed',
+      warnings: [noticeWarning, longFailureReason],
+      reviewers: [
+        { ...mockActiveJob.reviewers[0]!, state: 'failed', warning: 'codex error' },
+        { ...mockActiveJob.reviewers[1]!, state: 'failed', warning: 'gemini error' },
+      ],
+    };
+
+    apiClientMock.request.mockResolvedValueOnce(failedJob);
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const banner = fixture.nativeElement.querySelector('.failed-banner') as HTMLElement | null;
+    expect(banner).toBeTruthy();
+
+    // Expand button is present because the text is longer than 120 chars
+    const expandBtn = banner?.querySelector('.banner-expand-btn') as HTMLButtonElement | null;
+    expect(expandBtn).toBeTruthy();
+    expect(expandBtn?.textContent?.trim()).toBe('Show more');
+
+    // Initially truncated with ellipsis
+    const bannerMsg = banner?.querySelector('.banner-message');
+    expect(bannerMsg?.textContent).toContain('…');
+    expect(bannerMsg?.textContent?.length).toBeLessThan(longFailureReason.length);
+
+    // Click expand
+    expandBtn?.click();
+    fixture.detectChanges();
+
+    expect(expandBtn?.textContent?.trim()).toBe('Show less');
+    expect(bannerMsg?.textContent).toBe(longFailureReason);
+
+    // Verify the notices list contains noticeWarning, but DOES NOT contain the failure reason
+    const noticesRegion = fixture.nativeElement.querySelector('app-review-warning-list');
+    expect(noticesRegion?.textContent).toContain(noticeWarning);
+    expect(noticesRegion?.textContent).not.toContain('Failed during reviewing');
   });
 });

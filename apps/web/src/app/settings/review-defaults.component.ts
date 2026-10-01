@@ -1,9 +1,23 @@
 import { Component, EventEmitter, Input, Output, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ModelSelection, Settings } from '@pr-orchestrator/contracts';
+import {
+  ModelSelection,
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_ORDER,
+  ProviderId,
+  ReasoningEffort,
+  Settings,
+  isReasoningEffortSupported,
+} from '@pr-orchestrator/contracts';
 import { SelectableModel } from '../providers/providers.store';
 import { ProviderQuotasStore } from '../providers/provider-quotas.store';
+
+export interface GroupedSelectableModel {
+  provider: ProviderId;
+  groupLabel: string;
+  models: SelectableModel[];
+}
 
 @Component({
   selector: 'app-review-defaults',
@@ -12,20 +26,20 @@ import { ProviderQuotasStore } from '../providers/provider-quotas.store';
   template: `
     <div class="settings-card">
       <div class="card-header">
-        <h2>Review Execution Defaults & Limits</h2>
+        <h2>Review Execution Defaults</h2>
         <p class="section-desc">
-          Configure default concurrency, timeout bounds, diff thresholds, and default model assignments for new reviews.
+          Configure baseline reviewer concurrency, execution timeouts, limits, and pre-selected models.
         </p>
       </div>
 
       @if (formSettings) {
-        <form (ngSubmit)="onSave()" #form="ngForm">
-          <!-- Concurrency and Timeouts -->
+        <form (ngSubmit)="onSave()" class="settings-form">
+          <!-- Engine & Parallel Execution -->
           <div class="form-section">
-            <h3 class="subsection-title">Execution Concurrency & Timeouts</h3>
+            <h3 class="subsection-title">Concurrency & Timeouts</h3>
             <div class="form-grid">
               <div class="form-group">
-                <label for="maxParallelReviewers">Max Parallel Reviewers (1-3)</label>
+                <label for="maxParallelReviewers">Max Parallel Reviewers</label>
                 <input
                   id="maxParallelReviewers"
                   name="maxParallelReviewers"
@@ -35,7 +49,7 @@ import { ProviderQuotasStore } from '../providers/provider-quotas.store';
                   [(ngModel)]="formSettings.maxParallelReviewers"
                   required
                 />
-                <span class="field-hint">Maximum concurrent CLI subprocesses</span>
+                <span class="field-hint">Range: 1 to 3 concurrent processes</span>
               </div>
 
               <div class="form-group">
@@ -83,10 +97,14 @@ import { ProviderQuotasStore } from '../providers/provider-quotas.store';
                   (ngModelChange)="onMainModelChange($event)"
                 >
                   <option [ngValue]="null">-- None (select manually) --</option>
-                  @for (m of availableModels; track m.provider + ':' + m.model) {
-                    <option [value]="m.provider + ':' + m.model">
-                      {{ m.label }} ({{ m.provider }}){{ getQuotaSnippet(m.provider) }}
-                    </option>
+                  @for (group of groupedModels; track group.provider) {
+                    <optgroup [label]="group.groupLabel">
+                      @for (m of group.models; track m.provider + ':' + m.model) {
+                        <option [value]="m.provider + ':' + m.model">
+                          {{ m.label }} ({{ m.provider | uppercase }}){{ getQuotaSnippet(m.provider) }}
+                        </option>
+                      }
+                    </optgroup>
                   }
                 </select>
                 <span class="field-hint">Exact-one model responsible for evidence verification</span>
@@ -94,6 +112,28 @@ import { ProviderQuotasStore } from '../providers/provider-quotas.store';
                   <span class="field-hint selected-quota font-mono">
                     {{ getQuotaSummary(formSettings.defaultMain.provider) }}
                   </span>
+                }
+              </div>
+
+              <div class="form-group">
+                <label for="defaultMainEffort">Default Verifier Reasoning Effort</label>
+                <select
+                  id="defaultMainEffort"
+                  name="defaultMainEffort"
+                  [ngModel]="selectedMainEffort()"
+                  (ngModelChange)="onMainEffortChange($event)"
+                  [disabled]="isEffortDisabled()"
+                  aria-label="Default Verifier Reasoning Effort"
+                >
+                  <option value="default">Default</option>
+                  @for (lvl of supportedEffortLevels(); track lvl) {
+                    <option [value]="lvl">{{ formatEffortLabel(lvl) }}</option>
+                  }
+                </select>
+                @if (effortExplanation()) {
+                  <span class="field-hint">{{ effortExplanation() }}</span>
+                } @else {
+                  <span class="field-hint">Native reasoning behavior for default verifier</span>
                 }
               </div>
 
@@ -285,6 +325,14 @@ export class ReviewDefaultsComponent implements OnInit {
 
   formSettings: Settings | null = null;
 
+  get groupedModels(): GroupedSelectableModel[] {
+    return PROVIDER_ORDER.map((provider) => ({
+      provider,
+      groupLabel: PROVIDER_DISPLAY_NAMES[provider],
+      models: this.availableModels.filter((m) => m.provider === provider),
+    })).filter((group) => group.models.length > 0);
+  }
+
   ngOnInit(): void {
     if (this.settings) {
       this.formSettings = JSON.parse(JSON.stringify(this.settings));
@@ -298,6 +346,47 @@ export class ReviewDefaultsComponent implements OnInit {
     return `${this.formSettings.defaultMain.provider}:${this.formSettings.defaultMain.model}`;
   }
 
+  selectedMainEffort(): ReasoningEffort {
+    return this.formSettings?.defaultMain?.reasoningEffort ?? 'default';
+  }
+
+  getSelectedModel(): SelectableModel | undefined {
+    if (!this.formSettings?.defaultMain) return undefined;
+    return this.availableModels.find(
+      (m) =>
+        m.provider === this.formSettings?.defaultMain?.provider &&
+        m.model === this.formSettings?.defaultMain?.model,
+    );
+  }
+
+  supportedEffortLevels(): ReasoningEffort[] {
+    const model = this.getSelectedModel();
+    return (model?.supportedReasoningEfforts ?? []).filter((l) => l !== 'default');
+  }
+
+  isEffortDisabled(): boolean {
+    return !this.formSettings?.defaultMain || this.supportedEffortLevels().length === 0;
+  }
+
+  effortExplanation(): string | null {
+    if (!this.formSettings?.defaultMain) return null;
+    if (this.supportedEffortLevels().length === 0) {
+      return 'Effort override not supported for this model';
+    }
+    return null;
+  }
+
+  formatEffortLabel(lvl: ReasoningEffort): string {
+    switch (lvl) {
+      case 'low': return 'Low';
+      case 'medium': return 'Medium';
+      case 'high': return 'High';
+      case 'xhigh': return 'Extra High (xhigh)';
+      case 'max': return 'Maximum';
+      default: return 'Default';
+    }
+  }
+
   onMainModelChange(key: string | null): void {
     if (!this.formSettings) return;
     if (!key) {
@@ -305,9 +394,28 @@ export class ReviewDefaultsComponent implements OnInit {
       return;
     }
     const [provider, model] = key.split(':');
+    const newOption = this.availableModels.find(
+      (m) => m.provider === provider && m.model === model,
+    );
+    const prevEffort = this.selectedMainEffort();
+    let nextEffort: ReasoningEffort = 'default';
+
+    if (prevEffort !== 'default' && isReasoningEffortSupported(newOption, prevEffort)) {
+      nextEffort = prevEffort;
+    }
+
     this.formSettings.defaultMain = {
       provider: provider as ModelSelection['provider'],
       model,
+      reasoningEffort: nextEffort,
+    };
+  }
+
+  onMainEffortChange(effort: string): void {
+    if (!this.formSettings?.defaultMain) return;
+    this.formSettings.defaultMain = {
+      ...this.formSettings.defaultMain,
+      reasoningEffort: (effort as ReasoningEffort) || 'default',
     };
   }
 

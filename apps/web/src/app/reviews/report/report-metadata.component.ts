@@ -212,6 +212,12 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
       &.gemini { color: $provider-gemini; }
     }
 
+    .effort-tag {
+      font-size: 10px;
+      color: $accent-verifier;
+      margin-left: 4px;
+    }
+
     .reviewers-chips {
       display: flex;
       flex-wrap: wrap;

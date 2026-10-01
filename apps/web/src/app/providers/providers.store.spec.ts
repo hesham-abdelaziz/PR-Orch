@@ -1,4 +1,4 @@
-import { TestBed } from '@angular/core/testing';
+﻿import { TestBed } from '@angular/core/testing';
 import { ProvidersStore } from './providers.store';
 import { ApiClientService } from '../core/api/api-client.service';
 import { ProviderStatus } from '@pr-orchestrator/contracts';
@@ -19,7 +19,12 @@ describe('ProvidersStore', () => {
       modelCatalog: {
         discovery: 'dynamic',
         models: [
-          { id: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet', available: true },
+          {
+            id: 'claude-3-7-sonnet',
+            label: 'Claude 3.7 Sonnet',
+            available: true,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+          },
           { id: 'claude-3-5-haiku', label: 'Claude 3.5 Haiku', available: false, unavailableReason: 'Rate limit' },
         ],
       },
@@ -34,7 +39,12 @@ describe('ProvidersStore', () => {
       modelCatalog: {
         discovery: 'maintained',
         models: [
-          { id: 'gpt-4o', label: 'GPT-4o', available: true },
+          {
+            id: 'gpt-4o',
+            label: 'GPT-4o',
+            available: true,
+            supportedReasoningEfforts: ['low', 'medium', 'high'],
+          },
         ],
       },
       refreshedAt: new Date().toISOString(),
@@ -80,16 +90,41 @@ describe('ProvidersStore', () => {
     expect(store.providers()[0].provider).toBe('claude');
   });
 
-  it('computes selectableModels filtering out unavailable models', async () => {
+  it('computes selectableModels filtering out unavailable models and preserving reasoning efforts', async () => {
     apiClientMock.request.mockResolvedValueOnce(mockProviders);
     await store.load();
 
     const selectable = store.selectableModels();
     expect(selectable.length).toBe(2);
     expect(selectable).toEqual([
-      { provider: 'claude', model: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
-      { provider: 'codex', model: 'gpt-4o', label: 'GPT-4o' },
+      {
+        provider: 'claude',
+        model: 'claude-3-7-sonnet',
+        label: 'Claude 3.7 Sonnet',
+        supportedReasoningEfforts: ['low', 'medium', 'high'],
+      },
+      {
+        provider: 'codex',
+        model: 'gpt-4o',
+        label: 'GPT-4o',
+        supportedReasoningEfforts: ['low', 'medium', 'high'],
+      },
     ]);
+  });
+
+  it('groups selectable models explicitly in ChatGPT, Claude, Gemini order', async () => {
+    apiClientMock.request.mockResolvedValueOnce(mockProviders);
+    await store.load();
+
+    const grouped = store.groupedSelectableModels();
+    expect(grouped.length).toBe(2);
+    expect(grouped[0].provider).toBe('codex');
+    expect(grouped[0].groupLabel).toBe('ChatGPT');
+    expect(grouped[0].models[0].model).toBe('gpt-4o');
+
+    expect(grouped[1].provider).toBe('claude');
+    expect(grouped[1].groupLabel).toBe('Claude');
+    expect(grouped[1].models[0].model).toBe('claude-3-7-sonnet');
   });
 
   it('refreshes providers when refresh() is invoked', async () => {

@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, provideRouter } from '@angular/router';
-import { Subject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { ReportPageComponent } from './report-page.component';
 import { ApiClientService } from '../../core/api/api-client.service';
 import { ReviewEventsService } from '../../core/api/review-events.service';
@@ -12,6 +12,7 @@ describe('ReportPageComponent', () => {
   let component: ReportPageComponent;
   let fetchSpy: ReturnType<typeof vi.spyOn>;
   let eventsSubject: Subject<any>;
+  let paramMapSubject: BehaviorSubject<Map<string, string>>;
   let eventsServiceMock: {
     connect: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
@@ -141,6 +142,7 @@ describe('ReportPageComponent', () => {
   };
 
   beforeEach(async () => {
+    paramMapSubject = new BehaviorSubject(new Map([['reviewId', reviewId]]));
     eventsSubject = new Subject();
     eventsServiceMock = {
       connect: vi.fn().mockReturnValue(eventsSubject.asObservable()),
@@ -160,6 +162,7 @@ describe('ReportPageComponent', () => {
           provide: ActivatedRoute,
           useValue: {
             snapshot: { paramMap: new Map([['reviewId', reviewId]]) },
+            paramMap: paramMapSubject.asObservable(),
           },
         },
       ],
@@ -667,5 +670,253 @@ describe('ReportPageComponent', () => {
     expect(component.isInProgress()).toBe(false);
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('.findings-section')).toBeTruthy();
+  });
+
+  it('loads and renders a completed review when reasoningEffort is present in model selections and findings origins', async () => {
+    const jobWithReasoningEffort: ReviewJob = {
+      ...mockJob,
+      main: { provider: 'claude', model: 'claude-3-7-sonnet', reasoningEffort: 'medium' },
+      reviewers: [
+        {
+          ...mockJob.reviewers[0],
+          selection: { provider: 'codex', model: 'gpt-4o', reasoningEffort: 'high' },
+        },
+        {
+          ...mockJob.reviewers[1],
+          selection: { provider: 'gemini', model: 'gemini-1.5-pro', reasoningEffort: 'default' },
+        },
+      ],
+    };
+
+    const reportWithReasoningEffort: VerifiedReport = {
+      ...mockReport,
+      findings: [
+        {
+          ...mockReport.findings[0],
+          origins: [{ provider: 'codex', model: 'gpt-4o', reasoningEffort: 'high' }],
+        },
+        mockReport.findings[1],
+      ],
+      decisions: mockReport.decisions,
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(jobWithReasoningEffort), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(reportWithReasoningEffort), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.error()).toBeNull();
+    expect(component.report()).toBeTruthy();
+    expect(component.job()?.main.reasoningEffort).toBe('medium');
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.summary-text')?.textContent).toContain('OAuth2 token exchange');
+    expect(el.querySelectorAll('.finding-card').length).toBe(2);
+  });
+
+  it('loads and renders a failed review with reasoningEffort, mapping stages and showing actual warning without fabricated logs', async () => {
+    const failedJob: ReviewJob = {
+      ...mockJob,
+      state: 'failed',
+      main: { provider: 'claude', model: 'claude-3-7-sonnet', reasoningEffort: 'medium' },
+      reviewers: [
+        {
+          id: '123e4567-e89b-12d3-a456-426614174001',
+          selection: { provider: 'gemini', model: 'flash', reasoningEffort: 'default' },
+          state: 'failed',
+          startedAt: '2026-09-30T10:00:00.000Z',
+          completedAt: '2026-09-30T10:00:04.000Z',
+          warning: 'gemini exited with code 41: its signed-in account is not eligible for this CLI.',
+        },
+      ],
+      warnings: [
+        'Failed during reviewing: All reviewers failed. gemini/flash: gemini exited with code 41: its signed-in account is not eligible for this CLI.',
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(failedJob), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.error()).toBeNull();
+    expect(component.report()).toBeNull();
+    expect(component.job()?.state).toBe('failed');
+
+    const stages = component.stageStatuses();
+    // Stages 1-4 completed
+    expect(stages.find((s) => s.key === 'validate')?.status).toBe('completed');
+    expect(stages.find((s) => s.key === 'checkout')?.status).toBe('completed');
+    expect(stages.find((s) => s.key === 'detect')?.status).toBe('completed');
+    expect(stages.find((s) => s.key === 'standards')?.status).toBe('completed');
+    // Stage 5 failed
+    expect(stages.find((s) => s.key === 'reviewers')?.status).toBe('failed');
+    // Stages 6-7 not run
+    expect(stages.find((s) => s.key === 'verify')?.status).toBe('not_run');
+    expect(stages.find((s) => s.key === 'report')?.status).toBe('not_run');
+    // Stage 8 cleanup completed
+    expect(stages.find((s) => s.key === 'cleanup')?.status).toBe('completed');
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.failed-banner')).toBeTruthy();
+    expect(el.textContent).toContain('gemini exited with code 41');
+    expect(el.textContent).not.toContain('[orchestrator:init]');
+    expect(el.textContent).not.toContain('[orchestrator:redact]');
+  });
+
+  it('reacts to route paramMap changes and loads new review data when switching review IDs', async () => {
+    const jobBId = '33333333-3333-4333-8333-333333333333';
+    const jobB: ReviewJob = {
+      ...mockJob,
+      id: jobBId,
+      pullRequest: {
+        ...mockJob.pullRequest,
+        pullRequestId: 9999,
+        title: 'Switched Target PR Title',
+      },
+    };
+    const reportB: VerifiedReport = {
+      ...mockReport,
+      reviewId: jobBId,
+      executiveSummary: 'Executive summary for switched job B.',
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${jobBId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(jobB), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      if (url === `/api/reviews/${jobBId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(reportB), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    paramMapSubject.next(new Map([['reviewId', jobBId]]));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(component.job()?.id).toBe(jobBId);
+    expect(component.report()?.executiveSummary).toBe('Executive summary for switched job B.');
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('PR #9999');
+    expect(el.textContent).toContain('Switched Target PR Title');
+  });
+
+  it('loads and renders a cancelled review, displaying cancellation details', async () => {
+    const cancelledJob: ReviewJob = {
+      ...mockJob,
+      state: 'cancelled',
+      reviewers: [
+        {
+          ...mockJob.reviewers[0],
+          state: 'cancelled',
+          warning: null,
+        },
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(cancelledJob), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.job()?.state).toBe('cancelled');
+    expect(component.report()).toBeNull();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.cancelled-banner')).toBeTruthy();
+    expect(el.textContent).toContain('Review Cancelled');
+    expect(el.textContent).toContain('Review orchestration was cancelled. Child CLI processes were terminated.');
+    expect(el.querySelector('#cancel-review-btn')).toBeFalsy();
+  });
+
+  it('loads and renders an active review, restoring progress and connecting SSE', async () => {
+    const activeJob: ReviewJob = {
+      ...mockJob,
+      state: 'reviewing',
+      reviewers: [
+        {
+          ...mockJob.reviewers[0],
+          state: 'running',
+          warning: null,
+        },
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(activeJob), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    expect(component.job()?.state).toBe('reviewing');
+    expect(component.isInProgress()).toBe(true);
+    expect(component.canCancel()).toBe(true);
+    expect(eventsServiceMock.connect).toHaveBeenCalledWith(reviewId);
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('#cancel-review-btn')).toBeTruthy();
+    expect(el.querySelector('.telemetry-strip')).toBeTruthy();
+    expect(el.querySelector('app-pipeline-stage-list')).toBeTruthy();
   });
 });

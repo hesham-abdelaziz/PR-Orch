@@ -1,9 +1,12 @@
-import { Injectable, computed, signal } from '@angular/core';
+﻿import { Injectable, computed, signal } from '@angular/core';
 import { z } from 'zod';
 import {
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_ORDER,
   ProviderId,
   ProviderStatus,
   ProviderStatusSchema,
+  ReasoningEffort,
 } from '@pr-orchestrator/contracts';
 import { ApiClientService } from '../core/api/api-client.service';
 
@@ -11,6 +14,7 @@ export interface SelectableModel {
   provider: ProviderId;
   model: string;
   label: string;
+  supportedReasoningEfforts?: ReasoningEffort[];
 }
 
 export interface CatalogModelOption {
@@ -19,6 +23,13 @@ export interface CatalogModelOption {
   label: string;
   available: boolean;
   unavailableReason?: string;
+  supportedReasoningEfforts?: ReasoningEffort[];
+}
+
+export interface ModelGroup<T> {
+  provider: ProviderId;
+  groupLabel: string;
+  models: T[];
 }
 
 @Injectable({ providedIn: 'root' })
@@ -39,6 +50,7 @@ export class ProvidersStore {
             provider: provider.provider,
             model: model.id,
             label: model.label,
+            supportedReasoningEfforts: model.supportedReasoningEfforts,
           });
         }
       }
@@ -59,10 +71,32 @@ export class ProvidersStore {
           label: model.label,
           available: model.available,
           unavailableReason: model.unavailableReason,
+          supportedReasoningEfforts: model.supportedReasoningEfforts,
         });
       }
     }
     return list;
+  });
+
+  /**
+   * Grouped models explicitly ordered: ChatGPT (codex), Claude, Gemini.
+   */
+  readonly groupedSelectableModels = computed<ModelGroup<SelectableModel>[]>(() => {
+    const all = this.selectableModels();
+    return PROVIDER_ORDER.map((provider) => ({
+      provider,
+      groupLabel: PROVIDER_DISPLAY_NAMES[provider],
+      models: all.filter((m) => m.provider === provider),
+    })).filter((group) => group.models.length > 0);
+  });
+
+  readonly groupedInstalledModels = computed<ModelGroup<CatalogModelOption>[]>(() => {
+    const all = this.allInstalledModels();
+    return PROVIDER_ORDER.map((provider) => ({
+      provider,
+      groupLabel: PROVIDER_DISPLAY_NAMES[provider],
+      models: all.filter((m) => m.provider === provider),
+    })).filter((group) => group.models.length > 0);
   });
 
   constructor(private readonly apiClient: ApiClientService) {}

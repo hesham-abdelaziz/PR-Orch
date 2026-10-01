@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+﻿import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 
 @Component({
@@ -15,7 +15,7 @@ import { CommonModule } from '@angular/common';
         @if (content) {
           <pre class="log-content font-mono">{{ content }}</pre>
         } @else {
-          <div class="log-empty font-mono">No log output available for this execution unit.</div>
+          <div class="log-empty font-mono">No process output captured.</div>
         }
       </div>
     </details>

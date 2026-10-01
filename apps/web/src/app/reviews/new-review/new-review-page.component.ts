@@ -95,6 +95,7 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
             [availableModels]="store.providersStore.allInstalledModels()"
             (add)="store.addReviewer($event)"
             (remove)="store.removeReviewer($event)"
+              (update)="store.updateReviewerSelection($event.index, $event.selection)"
           />
 
           <!-- Step 4: Optional Instructions -->

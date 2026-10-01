@@ -1,6 +1,6 @@
-import { Component, OnDestroy, OnInit, effect, inject } from '@angular/core';
+﻿import { Component, OnDestroy, OnInit, computed, effect, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActivatedRoute, Router, RouterModule } from '@angular/router';
+import { Router, RouterModule } from '@angular/router';
 import { ActiveReviewStore } from './active-review.store';
 import { PipelineStageListComponent } from './pipeline-stage-list.component';
 import { ReviewerRunCardComponent } from './reviewer-run-card.component';
@@ -88,8 +88,20 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
           </div>
         } @else if (store.job()!.state === 'failed') {
           <div class="failed-banner" role="alert">
-            <span>⚠</span>
-            <span>Review failed during orchestration pipeline execution.</span>
+            <span class="banner-glyph">⚠</span>
+            <div class="banner-body">
+              <span class="banner-message">{{ displayedFailureBannerText() }}</span>
+              @if (isFailureBannerTruncatable()) {
+                <button
+                  type="button"
+                  class="banner-expand-btn font-mono"
+                  (click)="toggleFailureBannerExpand()"
+                  [attr.aria-expanded]="isFailureBannerExpanded()"
+                >
+                  {{ isFailureBannerExpanded() ? 'Show less' : 'Show more' }}
+                </button>
+              }
+            </div>
             <a routerLink="/reviews/new" class="btn-secondary ml-auto">Start Another Review</a>
           </div>
         }
@@ -119,8 +131,8 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
         <!-- 8 Deterministic Pipeline Stages -->
         <app-pipeline-stage-list [stages]="store.stageStatuses()" />
 
-        <!-- Warnings Region -->
-        <app-review-warning-list [warnings]="store.warnings()" />
+        <!-- Warnings Region (excluding failure banner warning) -->
+        <app-review-warning-list [warnings]="store.displayWarnings()" />
 
         <!-- Parallel Reviewers Section -->
         <div class="reviewers-section">
@@ -150,7 +162,7 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
       gap: 20px;
     }
 
-    .loading-state {
+    .loading-state, .empty-state {
       @include card-surface;
       padding: 40px;
       text-align: center;
@@ -158,30 +170,15 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
     }
 
     .empty-state {
-      @include card-surface;
       padding: 48px;
-      text-align: center;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 12px;
 
-      .empty-glyph {
-        font-size: 32px;
-        color: $text-muted;
-      }
-
-      h2 {
-        font-size: 16px;
-        font-weight: 600;
-        color: $text-primary;
-      }
-
-      p {
-        font-size: 13px;
-        color: $text-secondary;
-        margin-bottom: 8px;
-      }
+      .empty-glyph { font-size: 32px; }
+      h2 { font-size: 16px; font-weight: 600; color: $text-primary; }
+      p { font-size: 13px; color: $text-secondary; margin-bottom: 8px; }
     }
 
     .page-header {
@@ -213,9 +210,7 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
         &:hover { color: $accent-primary; }
       }
 
-      .active {
-        color: $text-primary;
-      }
+      .active { color: $text-primary; }
     }
 
     .job-badge {
@@ -301,40 +296,63 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
       gap: 6px;
     }
 
-    .completed-banner {
-      background-color: rgba(63, 185, 80, 0.12);
-      border: 1px solid rgba(63, 185, 80, 0.3);
+    .completed-banner, .cancelled-banner, .failed-banner {
       border-radius: 6px;
       padding: 12px 18px;
       display: flex;
       align-items: center;
       gap: 12px;
       font-size: 13px;
+      border: 1px solid transparent;
+    }
+
+    .completed-banner {
+      background-color: rgba(63, 185, 80, 0.12);
+      border-color: rgba(63, 185, 80, 0.3);
       color: #9df2a6;
     }
 
     .cancelled-banner {
       background-color: rgba(245, 158, 11, 0.12);
-      border: 1px solid rgba(245, 158, 11, 0.3);
-      border-radius: 6px;
-      padding: 12px 18px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 13px;
+      border-color: rgba(245, 158, 11, 0.3);
       color: $severity-medium;
     }
 
     .failed-banner {
       background-color: rgba(248, 81, 73, 0.12);
-      border: 1px solid rgba(248, 81, 73, 0.3);
-      border-radius: 6px;
-      padding: 12px 18px;
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-size: 13px;
+      border-color: rgba(248, 81, 73, 0.3);
       color: #ffdad6;
+      align-items: flex-start;
+    }
+
+    .banner-glyph {
+      font-size: 14px;
+      line-height: 1.4;
+      flex-shrink: 0;
+    }
+
+    .banner-body {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .banner-message {
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .banner-expand-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      color: $accent-primary;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: underline;
     }
 
     .telemetry-strip {
@@ -412,33 +430,47 @@ import { ReviewWarningListComponent } from './review-warning-list.component';
 export class ActiveReviewPageComponent implements OnInit, OnDestroy {
   readonly store = inject(ActiveReviewStore);
   private readonly router = inject(Router);
-  private readonly route = inject(ActivatedRoute);
-  private wasActive = false;
+
+  readonly isFailureBannerExpanded = signal<boolean>(false);
+
+  readonly failureBannerText = computed(() => {
+    return this.store.failureWarning() ?? 'Review failed during orchestration pipeline execution.';
+  });
+
+  readonly isFailureBannerTruncatable = computed(() => {
+    return this.failureBannerText().length > 120;
+  });
+
+  readonly displayedFailureBannerText = computed(() => {
+    const text = this.failureBannerText();
+    if (!this.isFailureBannerTruncatable() || this.isFailureBannerExpanded()) {
+      return text;
+    }
+    return text.slice(0, 120) + '…';
+  });
 
   constructor() {
-    // When review state transitions to completed while being actively viewed, automatically navigate to report
     effect(() => {
       const job = this.store.job();
-      if (job && job.state === 'completed' && this.wasActive) {
+      if (job && job.state === 'completed') {
         this.router.navigate([`/reviews/${job.id}`]);
-      } else if (job && !this.store.isTerminal()) {
-        this.wasActive = true;
       }
     });
   }
 
   async ngOnInit(): Promise<void> {
-    const reviewId = this.route.snapshot.paramMap.get('reviewId') || undefined;
-    await this.store.loadJob(reviewId);
+    await this.store.loadJob();
   }
 
   ngOnDestroy(): void {
     this.store.disconnect();
-    this.store.job.set(null);
-    this.wasActive = false;
   }
 
   async onCancel(): Promise<void> {
     await this.store.cancelReview();
+  }
+
+  toggleFailureBannerExpand(): void {
+    this.isFailureBannerExpanded.update((v) => !v);
   }
 }

@@ -242,4 +242,43 @@ describe('NewReviewStore', () => {
       expect(store.activeJob()).toBeNull();
     }
   });
+  it('supports independent reasoning effort for main and reviewers when creating review', async () => {
+    store.setPrUrl('https://dev.azure.com/acme/project/_git/repo/pullrequest/123');
+    store.prSummary.set(mockPrSummary);
+    store.setMainSelection({ provider: 'claude', model: 'claude-3-7-sonnet', reasoningEffort: 'high' });
+    store.setReviewerSelections([
+      { provider: 'codex', model: 'gpt-4o', reasoningEffort: 'low' },
+    ]);
+
+    apiClientMock.request.mockResolvedValueOnce(mockCreatedJob);
+
+    await store.createReview();
+
+    expect(apiClientMock.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        path: '/api/reviews',
+        body: expect.objectContaining({
+          main: { provider: 'claude', model: 'claude-3-7-sonnet', reasoningEffort: 'high' },
+          reviewers: [{ provider: 'codex', model: 'gpt-4o', reasoningEffort: 'low' }],
+        }),
+      }),
+    );
+  });
+
+  it('updates reviewer selection independently without affecting other reviewers', () => {
+    store.setReviewerSelections([
+      { provider: 'codex', model: 'gpt-4o', reasoningEffort: 'default' },
+      { provider: 'claude', model: 'claude-3-7-sonnet', reasoningEffort: 'medium' },
+    ]);
+
+    store.updateReviewerSelection(0, {
+      provider: 'codex',
+      model: 'gpt-4o',
+      reasoningEffort: 'high',
+    });
+
+    expect(store.reviewerSelections()[0].reasoningEffort).toBe('high');
+    expect(store.reviewerSelections()[1].reasoningEffort).toBe('medium');
+  });
 });

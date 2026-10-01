@@ -1,9 +1,29 @@
+import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 import { Component, EventEmitter, Input, Output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ModelSelection } from '@pr-orchestrator/contracts';
-import { SelectableModelOption } from './main-model-selector.component';
-import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
+import {
+  ModelSelection,
+  ProviderId,
+  PROVIDER_DISPLAY_NAMES,
+  PROVIDER_ORDER,
+  ReasoningEffort,
+} from '@pr-orchestrator/contracts';
+
+export interface SelectableModelOption {
+  provider: ProviderId;
+  model: string;
+  label: string;
+  available?: boolean;
+  unavailableReason?: string;
+  supportedReasoningEfforts?: ReasoningEffort[];
+}
+
+export interface ModelGroupOption {
+  provider: ProviderId;
+  groupLabel: string;
+  models: SelectableModelOption[];
+}
 
 @Component({
   selector: 'app-reviewer-selector',
@@ -16,13 +36,11 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
           <span class="step-num">03</span>
           <div>
             <div class="title-row">
-              <h2>Reviewer Models</h2>
-              <span class="badge badge-active font-mono">
-                {{ reviewers.length }} ACTIVE (PARALLEL)
-              </span>
+              <h2>Parallel Reviewer Models</h2>
+              <span class="badge badge-active font-mono">{{ reviewers.length }} / 8 SELECTED</span>
             </div>
             <p class="section-desc">
-              Reviewers independently analyze code changes in parallel without shared state. Results are partitioned, cross-referenced, and reconciled by the Main Verifier.
+              Independent models analyze the diff concurrently. Each produces structured claims, severity grades, and code citations.
             </p>
           </div>
         </div>
@@ -38,6 +56,9 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
                 <div class="name-row">
                   <span class="model-id font-mono">{{ reviewer.model }}</span>
                   <span class="provider-badge font-mono">{{ reviewer.provider | uppercase }}</span>
+                  @if (reviewer.reasoningEffort && reviewer.reasoningEffort !== 'default') {
+                    <span class="effort-badge font-mono">{{ reviewer.reasoningEffort | uppercase }} EFFORT</span>
+                  }
                 </div>
                 <span class="model-label truncate" [title]="getModelLabel(reviewer)">
                   {{ getModelLabel(reviewer) }}
@@ -48,6 +69,27 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
                   </span>
                 }
               </div>
+            </div>
+
+            <!-- Individual effort selector for this reviewer -->
+            <div class="reviewer-effort-col">
+              <label [for]="'reviewer-effort-' + idx" class="sr-only">
+                Reasoning effort for {{ reviewer.model }}
+              </label>
+              <select
+                [id]="'reviewer-effort-' + idx"
+                class="reviewer-effort-select"
+                [ngModel]="reviewer.reasoningEffort ?? 'default'"
+                (ngModelChange)="onEffortChange(idx, $event)"
+                [disabled]="isReviewerEffortDisabled(reviewer)"
+                [title]="getReviewerEffortTitle(reviewer)"
+                [attr.aria-label]="'Reasoning effort for ' + reviewer.model"
+              >
+                <option value="default">Default</option>
+                @for (lvl of getSupportedEfforts(reviewer); track lvl) {
+                  <option [value]="lvl">{{ formatEffortLabel(lvl) }}</option>
+                }
+              </select>
             </div>
 
             <div class="reviewer-actions">
@@ -70,23 +112,28 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
         <div class="add-reviewer-row">
           <div class="select-wrapper">
             <select
+              id="add-reviewer-select"
               [ngModel]="newReviewerKey"
               (ngModelChange)="onSelectNewReviewer($event)"
               aria-label="Add Reviewer Model"
             >
               <option value="" disabled selected>— Add Reviewer Model —</option>
-              @for (opt of availableModels; track opt.provider + ':' + opt.model) {
-                <option
-                  [value]="opt.provider + ':' + opt.model"
-                  [disabled]="isModelDisabled(opt)"
-                >
-                  {{ opt.label }} ({{ opt.provider | uppercase }}){{ getQuotaSnippet(opt.provider) }}
-                  @if (isModelSelected(opt)) {
-                    — [Already Added]
-                  } @else if (opt.available === false) {
-                    — [Unavailable: {{ opt.unavailableReason || 'CLI unauthenticated' }}]
+              @for (group of groupedModels; track group.provider) {
+                <optgroup [label]="group.groupLabel">
+                  @for (opt of group.models; track opt.provider + ':' + opt.model) {
+                    <option
+                      [value]="opt.provider + ':' + opt.model"
+                      [disabled]="isModelDisabled(opt)"
+                    >
+                      {{ opt.label }} ({{ opt.provider | uppercase }}){{ getQuotaSnippet(opt.provider) }}
+                      @if (isModelSelected(opt)) {
+                        — [Already Added]
+                      } @else if (opt.available === false) {
+                        — [Unavailable: {{ opt.unavailableReason || 'CLI unauthenticated' }}]
+                      }
+                    </option>
                   }
-                </option>
+                </optgroup>
               }
             </select>
           </div>
@@ -169,6 +216,14 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
       border: 1px solid rgba(56, 189, 248, 0.3);
     }
 
+    .effort-badge {
+      @include mono-badge;
+      background-color: rgba(163, 113, 247, 0.15);
+      color: $accent-verifier;
+      border: 1px solid rgba(163, 113, 247, 0.3);
+      font-size: 9px;
+    }
+
     .reviewers-list {
       display: flex;
       flex-direction: column;
@@ -241,6 +296,17 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
       @include truncate;
     }
 
+    .reviewer-effort-col {
+      width: 140px;
+      flex-shrink: 0;
+
+      .reviewer-effort-select {
+        width: 100%;
+        padding: 4px 8px;
+        font-size: 12px;
+      }
+    }
+
     .reviewer-actions {
       display: flex;
       align-items: center;
@@ -309,6 +375,18 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
     .font-mono {
       font-family: $font-mono;
     }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   `],
 })
 export class ReviewerSelectorComponent {
@@ -319,8 +397,17 @@ export class ReviewerSelectorComponent {
 
   @Output() add = new EventEmitter<ModelSelection>();
   @Output() remove = new EventEmitter<number>();
+  @Output() update = new EventEmitter<{ index: number; selection: ModelSelection }>();
 
   newReviewerKey = '';
+
+  get groupedModels(): ModelGroupOption[] {
+    return PROVIDER_ORDER.map((provider) => ({
+      provider,
+      groupLabel: PROVIDER_DISPLAY_NAMES[provider],
+      models: this.availableModels.filter((m) => m.provider === provider),
+    })).filter((group) => group.models.length > 0);
+  }
 
   getModelLabel(reviewer: ModelSelection): string {
     const found = this.availableModels.find(
@@ -339,8 +426,47 @@ export class ReviewerSelectorComponent {
     return opt.available === false || this.isModelSelected(opt);
   }
 
+  getSupportedEfforts(reviewer: ModelSelection): ReasoningEffort[] {
+    const found = this.availableModels.find(
+      (m) => m.provider === reviewer.provider && m.model === reviewer.model,
+    );
+    return (found?.supportedReasoningEfforts ?? []).filter((l) => l !== 'default');
+  }
+
+  isReviewerEffortDisabled(reviewer: ModelSelection): boolean {
+    return this.getSupportedEfforts(reviewer).length === 0;
+  }
+
+  getReviewerEffortTitle(reviewer: ModelSelection): string {
+    if (this.isReviewerEffortDisabled(reviewer)) {
+      return 'Effort override not supported for this model (Default only)';
+    }
+    return 'Select reasoning effort for this model';
+  }
+
+  formatEffortLabel(lvl: ReasoningEffort): string {
+    switch (lvl) {
+      case 'low': return 'Low';
+      case 'medium': return 'Medium';
+      case 'high': return 'High';
+      case 'xhigh': return 'Extra High (xhigh)';
+      case 'max': return 'Maximum';
+      default: return 'Default';
+    }
+  }
+
   onSelectNewReviewer(key: string): void {
     this.newReviewerKey = key;
+  }
+
+  onEffortChange(index: number, effort: string): void {
+    const current = this.reviewers[index];
+    if (!current) return;
+    const updated: ModelSelection = {
+      ...current,
+      reasoningEffort: (effort as ReasoningEffort) || 'default',
+    };
+    this.update.emit({ index, selection: updated });
   }
 
   onAdd(): void {
@@ -349,8 +475,9 @@ export class ReviewerSelectorComponent {
     const model = rest.join(':');
     if (provider && model) {
       this.add.emit({
-        provider: provider as 'claude' | 'codex' | 'gemini',
+        provider: provider as ProviderId,
         model,
+        reasoningEffort: 'default',
       });
       this.newReviewerKey = '';
     }
