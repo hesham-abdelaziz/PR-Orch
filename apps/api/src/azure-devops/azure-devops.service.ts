@@ -244,7 +244,8 @@ export class AzureDevOpsService {
           Number(change.changeTrackingId) <= 0
         )
           throw responseError();
-        text(record(change.item).path);
+        // Deletes report item.path as null and carry the path in originalPath.
+        text(record(change.item).path ?? change.originalPath);
         files.add(Number(change.changeTrackingId));
       }
       if (

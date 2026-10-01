@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CORE_REVIEW_RULES } from './core-review-policy.js';
 import { ReviewerPromptBuilder, type ReviewerPromptInput } from './reviewer-prompt.builder.js';
+import { PROTOCOL_AREAS, reviewAreas } from './review-protocol.js';
 
 function input(overrides: Partial<ReviewerPromptInput> = {}): ReviewerPromptInput {
   return {
@@ -195,6 +196,34 @@ describe('ReviewerPromptBuilder', () => {
     expect(builder.build(input({ additionalInstructions: 'x' }))).toBe(
       builder.build(input({ additionalInstructions: 'x' })),
     );
+  });
+
+  it('includes the review protocol and severity guide between guidance and the output schema', () => {
+    const prompt = builder.build(input());
+
+    const guidance = prompt.indexOf('# GUIDANCE');
+    const protocol = prompt.indexOf('# REVIEW PROTOCOL');
+    const severity = prompt.indexOf('# SEVERITY GUIDE');
+    const schema = prompt.indexOf('# OUTPUT SCHEMA');
+    expect(guidance).toBeGreaterThan(-1);
+    expect(protocol).toBeGreaterThan(guidance);
+    expect(severity).toBeGreaterThan(protocol);
+    expect(schema).toBeGreaterThan(severity);
+    for (const area of PROTOCOL_AREAS) expect(prompt).toContain(`[${area.id}]`);
+    expect(prompt).toContain('"coverage"');
+  });
+
+  it('lists the job standards sections as additional areas', () => {
+    const prompt = builder.build(input({ areas: reviewAreas(['3. Architecture', '8. Security']) }));
+
+    expect(prompt).toContain('{"area":"standards-1","section":"3. Architecture"}');
+    expect(prompt).toContain('{"area":"standards-2","section":"8. Security"}');
+  });
+
+  it('keeps the protocol above the lowest-priority additional instructions', () => {
+    const prompt = builder.build(input({ additionalInstructions: 'Only check naming.' }));
+
+    expect(prompt.indexOf('# REVIEW PROTOCOL')).toBeLessThan(prompt.indexOf('# ADDITIONAL INSTRUCTIONS'));
   });
 
   it('never mentions other reviewers or transcripts', () => {

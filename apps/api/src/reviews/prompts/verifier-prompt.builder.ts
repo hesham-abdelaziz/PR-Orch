@@ -13,6 +13,7 @@ import {
   type PromptStandards,
   type PromptWorkspace,
 } from './core-review-policy.js';
+import { severitySection } from './review-protocol.js';
 
 export interface VerifierPromptInput {
   verifier: ModelSelection;
@@ -38,6 +39,7 @@ export class VerifierPromptBuilder {
         warnings: [...input.workspace.warnings, ...input.jobWarnings],
       }),
       guidanceSection(input.standards, 'verifier'),
+      severitySection(),
       `# CANDIDATE IDS (${ids.length})\nYou must return exactly one decision covering each of these ids:\n${ids.join('\n')}`,
       '# CANDIDATE FINDINGS\nEach candidate lists the reviewer models that reported it in `origins`.',
       wrapUntrusted('CANDIDATE_FINDINGS', JSON.stringify(input.candidates)),

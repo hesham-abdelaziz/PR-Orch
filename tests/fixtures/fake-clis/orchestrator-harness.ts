@@ -18,6 +18,7 @@ import type {
 import { ProviderNotSelectableError } from '../../../apps/api/src/providers/provider-registry.service.js';
 import { ReportRenderer } from '../../../apps/api/src/reports/report-renderer.service.js';
 import { FindingNormalizerService } from '../../../apps/api/src/reviews/output/finding-normalizer.service.js';
+import { PROTOCOL_AREAS } from '../../../apps/api/src/reviews/prompts/review-protocol.js';
 import { ProviderOutputParser } from '../../../apps/api/src/reviews/output/provider-output.parser.js';
 import { InMemoryReviewRepository } from '../../../apps/api/src/reviews/in-memory-review.repository.js';
 import { CorrectionPromptBuilder } from '../../../apps/api/src/reviews/prompts/correction-prompt.builder.js';
@@ -70,11 +71,27 @@ export function wireFinding(overrides: Partial<WireFinding> = {}): WireFinding {
   };
 }
 
+export type WireCoverage = { area: string; status: 'checked' | 'not_applicable'; note: string };
+
+/** Full coverage of the fixed protocol areas, as a well-behaved reviewer reports it. */
+export function fullCoverage(): WireCoverage[] {
+  return PROTOCOL_AREAS.map((area) => ({ area: area.id, status: 'checked', note: `Examined ${area.title}.` }));
+}
+
 export function reviewerJson(
   findings: WireFinding[] = [wireFinding()],
-  extra: { warnings?: string[]; exclusions?: Array<{ path: string; reason: string }> } = {},
+  extra: {
+    warnings?: string[];
+    exclusions?: Array<{ path: string; reason: string }>;
+    coverage?: WireCoverage[];
+  } = {},
 ): string {
-  return JSON.stringify({ findings, warnings: extra.warnings ?? [], exclusions: extra.exclusions ?? [] });
+  return JSON.stringify({
+    findings,
+    warnings: extra.warnings ?? [],
+    exclusions: extra.exclusions ?? [],
+    coverage: extra.coverage ?? fullCoverage(),
+  });
 }
 
 export type WireDecision = {
@@ -343,6 +360,8 @@ export interface HarnessOptions {
   checkoutInspectors?: CheckoutInspectorFactory;
   /** Process heartbeat interval while a provider runs (production default 15 s). */
   heartbeatIntervalMs?: number;
+  /** Standards file contents by path; unknown paths read as missing. */
+  standardsFiles?: Record<string, string>;
 }
 
 const neverConfigured: Script = (request) => {
@@ -410,6 +429,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       checkoutInspectors: options.checkoutInspectors ?? checkout,
       ...(options.secretValues ? { secretValues: () => options.secretValues ?? [] } : {}),
       ...(options.heartbeatIntervalMs === undefined ? {} : { heartbeatIntervalMs: options.heartbeatIntervalMs }),
+      readStandards: (path: string) => Promise.resolve(options.standardsFiles?.[path] ?? null),
     },
     liveness,
   );

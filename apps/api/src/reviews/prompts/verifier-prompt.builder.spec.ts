@@ -131,6 +131,13 @@ describe('VerifierPromptBuilder', () => {
     expect(fallback).toMatch(/reject[^.]*documentation claim/i);
   });
 
+  it('recalibrates severity with the same guide reviewers use', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toContain('# SEVERITY GUIDE');
+    expect(prompt).not.toContain('# REVIEW PROTOCOL');
+  });
+
   it('embeds the verifier output schema', () => {
     const prompt = builder.build(input());
 

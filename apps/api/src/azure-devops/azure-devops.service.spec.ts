@@ -273,6 +273,40 @@ describe('Azure read-only client', () => {
     const pr = await service.validatePullRequest(url);
     expect(pr.changedFiles).toBe(1);
   });
+  it('accepts deleted files whose path is only reported as originalPath', async () => {
+    const secrets = new SecretValuesService(new FakeSecretStore());
+    await secrets.setPat('synthetic-pat-value');
+    const responses: unknown[] = fixtures();
+    responses[2] = {
+      changeEntries: [
+        { changeTrackingId: 1, item: { path: '/a.ts' }, changeType: 'edit' },
+        {
+          changeTrackingId: 2,
+          originalPath: '/old.ts',
+          item: { originalObjectId: 'C'.repeat(40), path: null },
+          changeType: 'delete',
+        },
+      ],
+    };
+    const service = new AzureDevOpsService(secrets, {
+      fetch: async () => Response.json(responses.shift()),
+    });
+    expect((await service.validatePullRequest(url)).changedFiles).toBe(2);
+  });
+  it('rejects change entries with neither an item path nor an original path', async () => {
+    const secrets = new SecretValuesService(new FakeSecretStore());
+    await secrets.setPat('synthetic-pat-value');
+    const responses: unknown[] = fixtures();
+    responses[2] = {
+      changeEntries: [{ changeTrackingId: 1, item: { path: null } }],
+    };
+    const service = new AzureDevOpsService(secrets, {
+      fetch: async () => Response.json(responses.shift()),
+    });
+    await expect(service.validatePullRequest(url)).rejects.toMatchObject({
+      status: 502,
+    });
+  });
   it('rejects partial pagination fields on iteration changes', async () => {
     const secrets = new SecretValuesService(new FakeSecretStore());
     await secrets.setPat('synthetic-pat-value');

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -62,6 +62,7 @@ import {
   type CheckoutInspectorFactory,
 } from './output/checkout-inspector.js';
 import { checkFindingLocation } from './output/finding-evidence.validator.js';
+import { coverageLogLine, coverageWarning, summarizeCoverage } from './output/coverage-check.js';
 import {
   REVIEWER_OUTPUT_JSON_SCHEMA_TEXT,
   VERIFIER_OUTPUT_JSON_SCHEMA_TEXT,
@@ -69,6 +70,7 @@ import {
 import type { PromptStandards } from './prompts/core-review-policy.js';
 import { CorrectionPromptBuilder } from './prompts/correction-prompt.builder.js';
 import { ReviewerPromptBuilder } from './prompts/reviewer-prompt.builder.js';
+import { reviewAreas, standardsSections, type ReviewArea } from './prompts/review-protocol.js';
 import { VerifierPromptBuilder } from './prompts/verifier-prompt.builder.js';
 import { assembleVerifiedReport } from './verifier-report.assembler.js';
 import { WorkspaceLayoutError, resolveWorkspaceLayout, type WorkspaceLayout } from './workspace-layout.js';
@@ -89,6 +91,11 @@ export interface ReviewOrchestratorOptions {
   checkoutInspectors?: CheckoutInspectorFactory;
   /** Interval of process heartbeats while a provider runs; defaults to 15 s. */
   heartbeatIntervalMs?: number;
+  /**
+   * Reads the job's standards file to derive per-section review areas; null
+   * when it is missing, unreadable or too large. Defaults to the file system.
+   */
+  readStandards?: (path: string) => Promise<string | null>;
 }
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -101,6 +108,15 @@ const MAX_STDERR_IN_LOG = 1_500;
 const MAX_JOB_WARNINGS = 100;
 const FAILABLE_STAGES: ReadonlySet<string> = new Set(['queued', 'preparing', 'reviewing', 'verifying', 'rendering']);
 const MAX_REVIEWER_WARNINGS = 5;
+/** Larger standards files are still reviewed against, just without per-section coverage. */
+const MAX_STANDARDS_BYTES_FOR_SECTIONS = 1024 * 1024;
+
+async function readStandardsFile(path: string): Promise<string | null> {
+  const info = await stat(path);
+  if (!info.isFile() || info.size > MAX_STANDARDS_BYTES_FOR_SECTIONS) return null;
+
+  return readFile(path, 'utf8');
+}
 
 interface Runtime {
   readonly jobId: string;
@@ -151,6 +167,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private readonly activity: RunActivityRecorder;
   private readonly liveness: RunLivenessService;
   private readonly heartbeatIntervalMs: number;
+  private readonly readStandards: (path: string) => Promise<string | null>;
 
   constructor(
     @Inject(REVIEW_REPOSITORY) private readonly repository: ReviewRepository,
@@ -175,6 +192,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     this.secretValues = options.secretValues ?? (() => collectSecretValues(process.env));
     this.checkoutInspectors = options.checkoutInspectors ?? new FileSystemCheckoutInspectorFactory();
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.readStandards = options.readStandards ?? readStandardsFile;
     this.liveness = liveness;
     this.activity = new RunActivityRecorder(repository, events, liveness, this.clock);
     this.stateMachine = new JobStateMachine(repository, this.clock);
@@ -459,10 +477,11 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   ): Promise<ReviewerOutcome[]> {
     const runs = (await this.repository.listRuns(ctx.jobId)).filter((run) => run.role === 'reviewer');
     const limit = Math.min(MAX_REVIEWER_PROCESSES, Math.max(1, record.settings.maxParallelReviewers));
+    const areas = reviewAreas(await this.standardsSectionTitles(record, ready));
 
     return this.pool(runs, limit, async (run) => {
       try {
-        return await this.runReviewer(ctx, record, ready, run);
+        return await this.runReviewer(ctx, record, ready, run, areas);
       } catch (error) {
         return this.reviewerFailure(run, `Reviewer failed unexpectedly: ${this.safeText(error)}`, 'failed');
       }
@@ -474,6 +493,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
     record: ReviewJobRecord,
     ready: ReadyWorkspace,
     initial: ReviewerRunRecord,
+    areas: readonly ReviewArea[],
   ): Promise<ReviewerOutcome> {
     const selection = initial.selection;
     const tag = label(selection);
@@ -495,6 +515,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       pullRequest: record.pullRequest,
       workspace: this.promptWorkspace(ready, ctx.warnings),
       standards: this.promptStandards(record, ready),
+      areas,
       ...(record.additionalInstructions ? { additionalInstructions: record.additionalInstructions } : {}),
     });
     const log: string[] = [];
@@ -548,6 +569,12 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         for (const warning of normalized.warnings.slice(0, MAX_REVIEWER_WARNINGS)) {
           warnings.push(`Reviewer ${tag}: ${this.safeText(warning)}`);
         }
+        // Coverage is attested by the model, not proven; a gap is disclosed, never retried,
+        // because a correction attempt would re-run the whole review and may lose findings.
+        const coverage = summarizeCoverage(areas, parsed.value.coverage);
+        log.push(coverageLogLine(coverage));
+        const gap = coverageWarning(tag, coverage, areas.length);
+        if (gap) warnings.push(this.safeText(gap, 1_000));
 
         return {
           run: await this.saveRun(run, {
@@ -1023,6 +1050,15 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       sha256: record.standards.sha256,
       path: file?.path ?? this.standardsPathOf(record, ready.prepared),
     };
+  }
+
+  /** Section headings of the job's standards file; empty when there is none or it cannot be read. */
+  private async standardsSectionTitles(record: ReviewJobRecord, ready: ReadyWorkspace): Promise<string[]> {
+    const standards = this.promptStandards(record, ready);
+    if (standards.kind !== 'snapshot' || standards.path === '') return [];
+    const text = await this.readStandards(standards.path).catch(() => null);
+
+    return text === null ? [] : standardsSections(text);
   }
 
   private standardsPathOf(record: ReviewJobRecord, prepared: PreparedWorkspace): string {

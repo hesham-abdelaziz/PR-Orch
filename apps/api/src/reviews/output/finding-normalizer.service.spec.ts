@@ -23,7 +23,7 @@ function finding(overrides: Partial<ReviewerOutput['findings'][number]> = {}) {
 }
 
 function output(...findings: ReviewerOutput['findings']): ReviewerOutput {
-  return { findings, warnings: [], exclusions: [] };
+  return { findings, warnings: [], exclusions: [], coverage: [] };
 }
 
 const service = new FindingNormalizerService();
@@ -155,6 +155,7 @@ describe('FindingNormalizerService', () => {
       workspaceRoot: ROOT,
       output: {
         findings: [],
+        coverage: [],
         warnings: ['Skipped generated code.'],
         exclusions: [
           { path: 'dist\\bundle.js', reason: 'Generated' },

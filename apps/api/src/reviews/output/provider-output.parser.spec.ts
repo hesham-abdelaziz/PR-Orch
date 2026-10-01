@@ -19,6 +19,7 @@ const reviewerPayload = {
   ],
   warnings: [],
   exclusions: [],
+  coverage: [{ area: 'correctness', status: 'checked', note: 'Read the loader changes.' }],
 };
 const payloadText = JSON.stringify(reviewerPayload);
 
@@ -171,7 +172,7 @@ describe('ProviderOutputParser.parseReviewer', () => {
   });
 
   it.each([
-    ['unknown finding field', { findings: [{ ...reviewerPayload.findings[0], confidence: 0.9 }], warnings: [], exclusions: [] }],
+    ['unknown finding field', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], confidence: 0.9 }] }],
     ['unknown top-level field', { ...reviewerPayload, score: 7 }],
     ['invalid severity', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], severity: 'severe' }] }],
     ['missing evidence', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], evidence: '' }] }],
@@ -180,7 +181,10 @@ describe('ProviderOutputParser.parseReviewer', () => {
     ['oversized title', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], title: 't'.repeat(201) }] }],
     ['string line number', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], location: { startLine: '12', endLine: null, description: null } }] }],
     ['zero line number', { ...reviewerPayload, findings: [{ ...reviewerPayload.findings[0], location: { startLine: 0, endLine: null, description: null } }] }],
-    ['missing warnings array', { findings: [], exclusions: [] }],
+    ['missing warnings array', { findings: [], exclusions: [], coverage: [] }],
+    ['missing coverage array', { findings: [], warnings: [], exclusions: [] }],
+    ['unknown coverage status', { ...reviewerPayload, coverage: [{ area: 'tests', status: 'skipped', note: 'n/a' }] }],
+    ['empty coverage note', { ...reviewerPayload, coverage: [{ area: 'tests', status: 'checked', note: ' ' }] }],
     ['findings not an array', { ...reviewerPayload, findings: 'none' }],
   ])('rejects %s with a schema violation', (_name, payload) => {
     const parsed = parser.parseReviewer({ provider: 'claude', rawOutput: JSON.stringify(payload) });

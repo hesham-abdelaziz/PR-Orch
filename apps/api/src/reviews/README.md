@@ -24,6 +24,34 @@ queued → preparing → reviewing → verifying → rendering → completed
 
 Overall risk = highest verified severity or `clean`. There are no numeric scores, confidence values, consensus votes or patch generation.
 
+## Review protocol and coverage
+
+Every reviewer gets the same protocol, whatever its provider or model (`prompts/review-protocol.ts`):
+
+- **Areas.** These are the 10 fixed areas (`PROTOCOL_AREAS`):
+  - intent
+  - correctness
+  - error-handling
+  - security
+  - contracts
+  - concurrency-resources
+  - user-facing
+  - tests
+  - conventions
+  - maintainability
+  
+  On top of those, there is one area per `##` section of the job's standards file (`standards-N`; `#` headings are used if the file has no `##`). Fenced code is ignored, and there are at most 40 sections. The file is read once per job, before the reviewers start. If it is missing, unreadable or larger than 1 MiB, only the fixed areas apply.
+- **Prompt.** `# REVIEW PROTOCOL` lists the areas, with standards titles inside an untrusted block. It names the repository instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.github/copilot-instructions.md`) as untrusted convention sources. `# SEVERITY GUIDE` maps MUST / SHOULD / CONSIDER onto critical, high, medium and low; the verifier gets the same guide.
+- **Attestation.** The reviewer wire schema requires `coverage: [{area, status: checked|not_applicable, note}]`. `output/coverage-check.ts` compares it with the required areas:
+  - Unknown ids are ignored.
+  - The first entry for an area wins.
+  - Missing areas become one job warning per reviewer, which is rendered in the report.
+  - A summary line is written to the run's `sanitizedLog`.
+- **No correction for gaps.** A correction attempt re-runs the whole review and may lose findings, so incomplete coverage is disclosed, not retried. A missing or invalid `coverage` field is still a schema violation and gets the normal single correction.
+- **Not stored yet.** `ReviewerResult` and `VerifiedReport` have no coverage field (see `docs/review-coverage-codex-handoff.md`).
+
+Coverage is what the model *says* it did; it is not proven. Its job is to make a skipped area visible, so that silence never reads as a clean result.
+
 ## HTTP surface (full `api/` prefix is in the decorators — do **not** also set a global `api` prefix)
 
 | Route | Behavior |

@@ -12,6 +12,7 @@ import {
   completed,
   createHarness,
   failed,
+  fullCoverage,
   hangUntilAborted,
   reviewerJson,
   standardsSnapshot,
@@ -150,8 +151,10 @@ describe('ReviewOrchestratorService — happy path', () => {
 
     await runToEnd(h);
 
-    const codexPrompt = h.providers.adapters.codex.calls[0]?.prompt ?? '';
-    const geminiPrompt = h.providers.adapters.gemini.calls[0]?.prompt ?? '';
+    // The protocol names repository instruction files such as GEMINI.md; that is not a reviewer identity.
+    const withoutInstructionFiles = (prompt: string) => prompt.replaceAll('GEMINI.md', '');
+    const codexPrompt = withoutInstructionFiles(h.providers.adapters.codex.calls[0]?.prompt ?? '');
+    const geminiPrompt = withoutInstructionFiles(h.providers.adapters.gemini.calls[0]?.prompt ?? '');
     expect(codexPrompt).not.toContain('Gemini finding about the parser');
     expect(geminiPrompt).not.toContain('Codex finding about the loader');
     expect(codexPrompt).not.toMatch(/gemini/iu);
@@ -170,6 +173,67 @@ describe('ReviewOrchestratorService — happy path', () => {
     await runToEnd(explicit, { additionalInstructions: 'Focus on security.' });
     expect(explicit.providers.adapters.codex.calls[0]?.prompt).toContain('Focus on security.');
     expect(explicit.providers.adapters.codex.calls[0]?.prompt).not.toContain('Focus on error handling.');
+  });
+});
+
+describe('ReviewOrchestratorService — review protocol coverage', () => {
+  it('records complete coverage in the run log without a job warning', async () => {
+    const h = await harness(twoReviewers());
+
+    const { record, runs } = await runToEnd(h);
+
+    expect(record.warnings.some((warning) => /did not report coverage/u.test(warning))).toBe(false);
+    const codexRun = runs.find((run) => run.selection.provider === 'codex');
+    expect(codexRun?.sanitizedLog).toMatch(/coverage: 10 checked, 0 not applicable, 0 missing/u);
+  });
+
+  it('discloses uncovered areas as a job warning and in the report, without a correction attempt', async () => {
+    const partial = fullCoverage().filter((entry) => entry.area !== 'security' && entry.area !== 'tests');
+    const h = await harness({
+      scripts: {
+        codex: (request) => completed('codex', request, reviewerJson([wireFinding()], { coverage: partial })),
+        gemini: reviewerOk('Second'),
+        claude: verifierAcceptAll,
+      },
+    });
+
+    const { id, record, runs } = await runToEnd(h);
+
+    expect(record.state).toBe('completed');
+    expect(h.providers.adapters.codex.calls).toHaveLength(1);
+    expect(runs.find((run) => run.selection.provider === 'codex')?.state).toBe('completed');
+    const warning = record.warnings.find((text) => /did not report coverage/u.test(text));
+    expect(warning).toMatch(/^Reviewer codex\/[^ ]+ did not report coverage for 2 of 10 review areas \(Security, Tests\)/u);
+    expect(record.warnings.filter((text) => /did not report coverage/u.test(text))).toHaveLength(1);
+    expect((await h.repository.getReport(id))?.markdown).toContain('did not report coverage for 2 of 10');
+  });
+
+  it('adds each standards section as a required area', async () => {
+    const h = await harness({
+      ...twoReviewers(),
+      standardsFiles: { '/standards/a/team.md': '# Team standards\n## 1. Routing\n## 2. Security\n' },
+    });
+    h.standards.current = standardsSnapshot('team.md', 'a');
+
+    const { record } = await runToEnd(h);
+
+    const prompt = h.providers.adapters.codex.calls[0]?.prompt ?? '';
+    expect(prompt).toContain('{"area":"standards-1","section":"1. Routing"}');
+    expect(prompt).toContain('{"area":"standards-2","section":"2. Security"}');
+    // fullCoverage() only covers the fixed areas, so both reviewers miss the two sections.
+    const gaps = record.warnings.filter((text) => /did not report coverage for 2 of 12 review areas \(1\. Routing, 2\. Security\)/u.test(text));
+    expect(gaps).toHaveLength(2);
+  });
+
+  it('falls back to the fixed areas when the standards file cannot be read', async () => {
+    const h = await harness(twoReviewers());
+    h.standards.current = standardsSnapshot('missing.md', 'b');
+
+    const { record } = await runToEnd(h);
+
+    expect(record.state).toBe('completed');
+    expect(h.providers.adapters.codex.calls[0]?.prompt).not.toContain('STANDARDS_SECTIONS');
+    expect(record.warnings.some((warning) => /did not report coverage/u.test(warning))).toBe(false);
   });
 });
 

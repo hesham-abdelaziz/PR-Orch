@@ -41,10 +41,18 @@ export const ExclusionOutputSchema = z.strictObject({
   reason: CoverageExclusionSchema.shape.reason,
 });
 
+/** One review-protocol area the reviewer attests it examined (or that does not apply). */
+export const CoverageOutputSchema = z.strictObject({
+  area: z.string().trim().min(1).max(100),
+  status: z.enum(['checked', 'not_applicable']),
+  note: z.string().trim().min(1).max(500),
+});
+
 export const ReviewerOutputSchema = z.strictObject({
   findings: z.array(FindingOutputSchema).max(500),
   warnings: ReviewerResultSchema.shape.warnings,
   exclusions: z.array(ExclusionOutputSchema).max(1_000),
+  coverage: z.array(CoverageOutputSchema).max(200),
 });
 
 export const VerifierDecisionOutputSchema = z
@@ -93,6 +101,7 @@ export const VerifierOutputSchema = z.strictObject({
 });
 
 export type FindingOutput = z.infer<typeof FindingOutputSchema>;
+export type CoverageOutput = z.infer<typeof CoverageOutputSchema>;
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 export type VerifierDecisionOutput = z.infer<typeof VerifierDecisionOutputSchema>;
 export type VerifierOutput = z.infer<typeof VerifierOutputSchema>;

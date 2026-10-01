@@ -21,6 +21,7 @@ describe('redactModelOutput', () => {
       findings: [finding],
       warnings: [`saw ${S.slack}`],
       exclusions: [{ path: 'dist/app.js', reason: `embeds ${S.azurePat}` }],
+      coverage: [{ area: 'security', status: 'checked', note: `found ${S.azurePat} in config` }],
     });
 
     const redacted = redactModelOutput(output);
@@ -63,6 +64,7 @@ describe('redactModelOutput', () => {
       ],
       warnings: [],
       exclusions: [],
+      coverage: [{ area: 'concurrency-resources', status: 'checked', note: 'Checked the token refresh queue ordering.' }],
     });
 
     expect(redactModelOutput(output)).toEqual(output);

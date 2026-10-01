@@ -50,6 +50,24 @@ export const CoverageExclusionSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
 });
 
+export const ReviewAreaSourceSchema = z.enum(['protocol', 'standards']);
+export const ReviewAreaStatusSchema = z.enum(['checked', 'not_applicable', 'missing']);
+
+/** One required review area and what a reviewer attested for it ('missing' = no entry). */
+export const ReviewAreaCoverageSchema = z.strictObject({
+  area: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1).max(200),
+  source: ReviewAreaSourceSchema,
+  status: ReviewAreaStatusSchema,
+  /** The reviewer's note; absent when status is 'missing'. */
+  note: z.string().trim().min(1).max(500).optional(),
+});
+
+export const ReviewerCoverageSchema = z.strictObject({
+  reviewer: ModelSelectionSchema,
+  areas: z.array(ReviewAreaCoverageSchema).max(200),
+});
+
 export const ReviewFindingSchema = z.strictObject({
   id: z.string().uuid(),
   title: z.string().trim().min(3).max(200),
@@ -65,6 +83,7 @@ export const ReviewFindingSchema = z.strictObject({
 
 export const ReviewerResultSchema = z.strictObject({
   reviewer: ModelSelectionSchema,
+  coverage: z.array(ReviewAreaCoverageSchema).max(200).optional(),
   findings: z.array(ReviewFindingSchema).max(500),
   warnings: z.array(z.string().trim().min(1).max(1_000)).max(100),
   exclusions: z.array(CoverageExclusionSchema).max(1_000),
@@ -110,6 +129,8 @@ export const VerifiedReportSchema = z.strictObject({
   reviewId: z.string().uuid(),
   executiveSummary: z.string().trim().min(1).max(10_000),
   overallRisk: OverallRiskSchema,
+  /** One entry per completed reviewer, in reviewer order. */
+  coverage: z.array(ReviewerCoverageSchema).max(10).optional(),
   findings: z.array(ReviewFindingSchema).max(500),
   decisions: z.array(VerifierDecisionSchema).max(1_000),
   acceptedCount: z.number().int().nonnegative(),
@@ -120,6 +141,8 @@ export const VerifiedReportSchema = z.strictObject({
 });
 
 export type Severity = z.infer<typeof SeveritySchema>;
+export type ReviewAreaCoverage = z.infer<typeof ReviewAreaCoverageSchema>;
+export type ReviewerCoverage = z.infer<typeof ReviewerCoverageSchema>;
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
 export type ReviewerResult = z.infer<typeof ReviewerResultSchema>;
 export type VerifierDecision = z.infer<typeof VerifierDecisionSchema>;
