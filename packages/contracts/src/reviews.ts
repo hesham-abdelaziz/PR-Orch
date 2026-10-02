@@ -4,6 +4,7 @@ import { ActivityVisibilitySchema, RunActivitySchema, RunActivitySummarySchema, 
 import { PullRequestSummarySchema } from './pull-requests.js';
 import { ModelSelectionSchema } from './providers.js';
 import { StandardsMetadataSchema } from './settings.js';
+import { RepositoryGuidanceSchema, RepositoryGuidanceMetadataSchema } from './repository-guidance.js';
 
 export const JobStateSchema = z.enum([
   'queued',
@@ -32,6 +33,7 @@ export const CreateReviewRequestSchema = z
     main: ModelSelectionSchema,
     reviewers: z.array(ModelSelectionSchema).min(1).max(8),
     additionalInstructions: z.string().max(10_000).optional(),
+    repositoryGuidance: RepositoryGuidanceSchema.optional(),
   })
   .superRefine((request, context) => {
     const seen = new Set<string>();
@@ -69,6 +71,7 @@ export const ReviewJobSchema = z.strictObject({
   reviewers: z.array(ReviewerRunSchema).min(1).max(8),
   verifier: ReviewerRunSchema.optional(),
   standards: StandardsMetadataSchema.nullable(),
+  repositoryGuidance: RepositoryGuidanceMetadataSchema.nullable().optional(),
   warnings: z.array(z.string().trim().min(1).max(1_000)).max(100),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

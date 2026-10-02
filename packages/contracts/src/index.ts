@@ -4,6 +4,7 @@ export * from './providers.js';
 export * from './quota.js';
 export * from './pull-requests.js';
 export * from './reviews.js';
+export * from './repository-guidance.js';
 export * from './settings.js';
 export * from './quota.js';
 export * from './activity.js';

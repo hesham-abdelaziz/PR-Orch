@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   OverallRiskSchema,
   PullRequestSummary,
+  RepositoryGuidanceSnapshot,
   Settings,
   StandardsMetadata,
 } from '@pr-orchestrator/contracts';
@@ -25,6 +26,8 @@ export interface ReviewJobRecord {
   main: ModelSelection;
   reviewers: ModelSelection[];
   additionalInstructions: string | null;
+  /** Per-review attachment frozen at creation; absent on legacy engine records. */
+  readonly repositoryGuidance?: RepositoryGuidanceSnapshot | null;
   /** Standards snapshot taken at creation; later replacements never change it. */
   standards: StandardsMetadata | null;
   standardsStoragePath: string | null;

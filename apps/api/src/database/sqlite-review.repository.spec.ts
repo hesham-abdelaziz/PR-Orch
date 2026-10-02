@@ -21,6 +21,33 @@ describe('durable review repository', () => {
   });
   afterEach(async () => { if (db.isInitialized) await db.destroy(); await rm(directory, { recursive: true, force: true }); });
 
+  it('round-trips an immutable guidance snapshot after reopening without exposing content', async () => {
+    const snapshot = { filename: 'AGENTS.md', content: 'Review café 😀.\r\n', sha256: 'a'.repeat(64), sizeBytes: 20 };
+    const job = { ...jobRecord(), repositoryGuidance: snapshot };
+    await repository.createJob(job);
+    snapshot.content = 'changed by caller';
+    await repository.updateJob(job.id, { repositoryGuidance: null } as never, job.updatedAt);
+    await repository.transitionJob({ jobId: job.id, expectedFrom: 'queued', to: 'preparing', at: job.updatedAt, patch: { repositoryGuidance: null } as never });
+    await db.destroy();
+    db = await createPlatformDataSource(join(directory, 'db.sqlite')).initialize();
+    repository = new SqliteReviewRepository(db);
+    const stored = (await repository.getJob(job.id))!;
+    expect(stored).toMatchObject({ repositoryGuidance: { filename: 'AGENTS.md', content: 'Review café 😀.\r\n', sha256: 'a'.repeat(64), sizeBytes: 20 } });
+    expect(JSON.stringify(toReviewJob(stored, []))).not.toContain('Review café');
+    const events = new ReviewEventsService(repository);
+    const event = await firstValueFrom(events.stream(job.id, async () => toReviewJob((await repository.getJob(job.id))!, [])));
+    expect(JSON.stringify(event)).not.toContain('Review café');
+    const retrieved = stored as typeof job;
+    retrieved.repositoryGuidance.content = 'changed after retrieval';
+    expect((await repository.getJob(job.id)) as typeof job).toMatchObject({ repositoryGuidance: { content: 'Review café 😀.\r\n' } });
+  });
+
+  it('defaults legacy records without guidance to null', async () => {
+    const job = jobRecord();
+    await repository.createJob(job);
+    expect(await repository.getJob(job.id)).toMatchObject({ repositoryGuidance: null });
+  });
+
   it('inserts job and runs atomically and leaves no loser rows', async () => {
     const a = jobRecord(); const b = jobRecord();
     const run = { id: uuid(), jobId: a.id, role: 'reviewer' as const, selection: a.reviewers[0]!, state: 'queued' as const, startedAt: null, completedAt: null, warning: null, attempts: 0, sanitizedLog: '', result: null };

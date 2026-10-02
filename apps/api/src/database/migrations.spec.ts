@@ -71,7 +71,7 @@ describe('run activity migration', () => {
       const upgraded = await createPlatformDataSource(path).initialize();
       try {
         await upgraded.runMigrations();
-        expect(await upgraded.query('SELECT * FROM review_jobs')).toEqual(jobs);
+        expect(await upgraded.query('SELECT * FROM review_jobs')).toEqual(jobs.map((job: object) => ({ ...job, repository_guidance: null })));
         expect(await upgraded.query('SELECT * FROM candidate_findings')).toEqual(candidates);
         expect(await upgraded.query('SELECT * FROM reviewer_runs')).toEqual(runs.map((run: object) => ({ ...run, activity_visibility: null, activity_count: 0, last_activity_at: null })));
         expect(await upgraded.query('SELECT * FROM run_activity')).toEqual([]);
@@ -80,5 +80,30 @@ describe('run activity migration', () => {
       if (db.isInitialized) await db.destroy();
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('repository guidance migration', () => {
+  it('upgrades a 005 database preserving jobs and reports with nullable guidance', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'guidance-upgrade-'));
+    const path = join(directory, 'db.sqlite');
+    let db = createPlatformDataSource(path);
+    const migrations = db.options.migrations;
+    db.setOptions({ migrations: Array.isArray(migrations) ? migrations.slice(0, 5) : [] });
+    await db.initialize();
+    try {
+      await db.runMigrations();
+      await db.query("INSERT INTO review_jobs (id,state,pull_request,main,reviewers,settings,warnings,exclusions,created_at,updated_at) VALUES ('old','completed','{}','{}','[]','{}','[]','[]','now','now')");
+      await db.query("INSERT INTO reports VALUES ('old','{}','legacy report',1,'now')");
+      const jobs = await db.query('SELECT * FROM review_jobs');
+      const reports = await db.query('SELECT * FROM reports');
+      await db.destroy();
+      db = await createPlatformDataSource(path).initialize();
+      await db.runMigrations();
+      expect(await db.query('SELECT * FROM review_jobs')).toEqual(jobs.map((job: object) => ({ ...job, repository_guidance: null })));
+      expect(await db.query('SELECT * FROM reports')).toEqual(reports);
+      expect(await db.query('PRAGMA table_info(review_jobs)')).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'repository_guidance', type: 'JSON', notnull: 0 })]));
+      expect(await db.runMigrations()).toEqual([]);
+    } finally { if (db.isInitialized) await db.destroy(); await rm(directory, { recursive: true, force: true }); }
   });
 });

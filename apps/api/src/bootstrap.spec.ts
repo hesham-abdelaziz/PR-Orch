@@ -79,6 +79,21 @@ describe('local application startup', () => {
       expect(settings.status).toBe(200);
       expect(settings.headers['cache-control']).toBe('no-store');
       expect(settings.headers['access-control-allow-origin']).toBeUndefined();
+      // A 64 KiB attachment can use six JSON bytes per ASCII character when
+      // sent as Unicode escapes. Reach request validation, not the 413 parser.
+      const escapedGuidanceBody = JSON.stringify({
+        pullRequestUrl: 'invalid-url',
+        main: { provider: 'claude', model: 'opus' },
+        reviewers: [{ provider: 'codex', model: 'cli-default' }],
+        repositoryGuidance: { filename: 'AGENTS.md', content: 'x'.repeat(65_536) },
+      }).replace(/x/g, '\\u0078');
+      const guidanceResponse = await request(app.getHttpServer())
+        .post('/api/reviews')
+        .set('Cookie', cookie)
+        .set('Content-Type', 'application/json')
+        .send(escapedGuidanceBody);
+      expect(guidanceResponse.status).toBe(400);
+      expect(guidanceResponse.body.message).toBe('Invalid review request.');
       expect(
         (
           await request(app.getHttpServer())
