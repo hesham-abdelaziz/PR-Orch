@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   Inject,
@@ -16,6 +16,8 @@ import {
   type ActivityOutcome,
   type CreateReviewRequest,
   type ModelSelection,
+  type RepositoryGuidance,
+  type RepositoryGuidanceSnapshot,
   type ReviewFinding,
   type ReviewJob,
   type RunState,
@@ -253,6 +255,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
         main: request.main,
         reviewers: request.reviewers,
         additionalInstructions: instructions.length > 0 ? instructions : null,
+        ...(request.repositoryGuidance ? { repositoryGuidance: freezeGuidance(request.repositoryGuidance) } : {}),
         standards: snapshot?.metadata ?? null,
         standardsStoragePath: snapshot?.storagePath ?? null,
         settings,
@@ -517,6 +520,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       pullRequest: record.pullRequest,
       workspace: this.promptWorkspace(ready, ctx.warnings),
       standards: this.promptStandards(record, ready),
+      repositoryGuidance: record.repositoryGuidance ?? null,
       areas,
       ...(record.additionalInstructions ? { additionalInstructions: record.additionalInstructions } : {}),
     });
@@ -707,6 +711,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       pullRequest: record.pullRequest,
       workspace: this.promptWorkspace(ready, ready.prepared.warnings),
       standards: this.promptStandards(record, ready),
+      repositoryGuidance: record.repositoryGuidance ?? null,
       candidates,
       jobWarnings: reviewerWarnings,
     });
@@ -1107,6 +1112,18 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
 
 type VerifierOutputLike = Parameters<typeof assembleVerifiedReport>[0]['output'];
 type VerifiedOutcome = Extract<Awaited<ReturnType<typeof assembleVerifiedReport>>, { ok: true }>;
+
+/** Immutable creation-time copy of the uploaded guidance with its SHA-256 and UTF-8 size. */
+function freezeGuidance(guidance: RepositoryGuidance): RepositoryGuidanceSnapshot {
+  const bytes = Buffer.from(guidance.content, 'utf8');
+
+  return Object.freeze({
+    filename: guidance.filename,
+    content: guidance.content,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sizeBytes: bytes.byteLength,
+  });
+}
 
 function describeCorrection(attempt: number, error: CorrectionNeededError): string {
   return `attempt ${attempt}: ${error.reason}${error.issues.length > 0 ? ` (${error.issues.slice(0, 3).join('; ')})` : ''}`;

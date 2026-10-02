@@ -48,6 +48,16 @@ export function toReviewJob(
       .map((run) => toReviewerRun(run, activity)),
     ...(verifier ? { verifier: toReviewerRun(verifier, activity) } : {}),
     standards: record.standards,
+    // Metadata only: the frozen content never leaves the engine.
+    ...(record.repositoryGuidance
+      ? {
+          repositoryGuidance: {
+            filename: record.repositoryGuidance.filename,
+            sha256: record.repositoryGuidance.sha256,
+            sizeBytes: record.repositoryGuidance.sizeBytes,
+          },
+        }
+      : {}),
     warnings: record.warnings,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

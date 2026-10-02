@@ -6,10 +6,12 @@ import {
   CORE_VERIFIER_RULES,
   finalReminder,
   guidanceSection,
+  repositoryGuidanceSection,
   jobContextSection,
   rulesSection,
   wrapUntrusted,
   type PromptPullRequest,
+  type PromptRepositoryGuidance,
   type PromptStandards,
   type PromptWorkspace,
 } from './core-review-policy.js';
@@ -20,6 +22,7 @@ export interface VerifierPromptInput {
   pullRequest: PromptPullRequest;
   workspace: PromptWorkspace;
   standards: PromptStandards;
+  repositoryGuidance?: PromptRepositoryGuidance | null;
   /** Normalized candidates from every successful reviewer, with stable ids and origins. */
   candidates: readonly ReviewFinding[];
   /** Job-level warnings such as failed or timed-out reviewers. */
@@ -39,6 +42,7 @@ export class VerifierPromptBuilder {
         warnings: [...input.workspace.warnings, ...input.jobWarnings],
       }),
       guidanceSection(input.standards, 'verifier'),
+      ...repositoryGuidanceSection(input.repositoryGuidance),
       severitySection(),
       `# CANDIDATE IDS (${ids.length})\nYou must return exactly one decision covering each of these ids:\n${ids.join('\n')}`,
       '# CANDIDATE FINDINGS\nEach candidate lists the reviewer models that reported it in `origins`.',

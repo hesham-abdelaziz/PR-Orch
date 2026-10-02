@@ -275,3 +275,18 @@ describe('runtime probe rules', () => {
     expect(builder.build(input({ reviewer: codex }))).toMatch(/"probe":\{"anyOf":\[\{"type":"object","properties":\{"summary"/u);
   });
 });
+
+describe('ReviewerPromptBuilder — repository guidance', () => {
+  it('adds guidance as an untrusted block after the standards and before the protocol', () => {
+    const prompt = builder.build(
+      input({ repositoryGuidance: { filename: 'AGENTS.md', sha256: 'b'.repeat(64), sizeBytes: 9, content: 'Use tabs.' } }),
+    );
+
+    expect(prompt).toContain('# REPOSITORY GUIDANCE');
+    expect(prompt).toContain(`AGENTS.md (sha256 ${'b'.repeat(64)}, 9 bytes)`);
+    expect(prompt).toMatch(/<<<BEGIN UNTRUSTED REPOSITORY_GUIDANCE [0-9a-f]{16}>>>\nUse tabs\./u);
+    expect(prompt.indexOf('# GUIDANCE')).toBeLessThan(prompt.indexOf('# REPOSITORY GUIDANCE'));
+    expect(prompt.indexOf('# REPOSITORY GUIDANCE')).toBeLessThan(prompt.indexOf('# OUTPUT SCHEMA'));
+    expect(builder.build(input())).not.toContain('REPOSITORY GUIDANCE');
+  });
+});

@@ -170,3 +170,16 @@ describe('verifier calibration and probe handling', () => {
     expect(prompt).not.toMatch(/"probe":\{/u);
   });
 });
+
+describe('VerifierPromptBuilder — repository guidance', () => {
+  it('adds guidance as an untrusted block only when attached', () => {
+    const prompt = new VerifierPromptBuilder().build(
+      input({ repositoryGuidance: { filename: 'GEMINI.md', sha256: 'c'.repeat(64), sizeBytes: 9, content: 'Use tabs.' } }),
+    );
+
+    expect(prompt).toContain('# REPOSITORY GUIDANCE');
+    expect(prompt).toMatch(/<<<BEGIN UNTRUSTED REPOSITORY_GUIDANCE [0-9a-f]{16}>>>\nUse tabs\./u);
+    expect(prompt.indexOf('# REPOSITORY GUIDANCE')).toBeLessThan(prompt.indexOf('# CANDIDATE IDS'));
+    expect(new VerifierPromptBuilder().build(input())).not.toContain('REPOSITORY GUIDANCE');
+  });
+});

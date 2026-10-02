@@ -107,6 +107,7 @@ export class ReportRenderer {
 
   private guidance(lines: string[], job: ReviewJob): void {
     lines.push('## Guidance', '');
+    this.repositoryGuidance(lines, job);
 
     if (job.standards === null) {
       lines.push(
@@ -123,6 +124,19 @@ export class ReportRenderer {
       `- SHA-256: ${codeSpan(standards.sha256)}`,
       `- Size: ${standards.sizeBytes} bytes`,
       `- Uploaded: ${sanitizeInline(standards.uploadedAt)}`,
+      '',
+    );
+  }
+
+  /** Uploaded repository guidance: filename, hash and size only, never its content. */
+  private repositoryGuidance(lines: string[], job: ReviewJob): void {
+    const guidance = job.repositoryGuidance;
+    if (!guidance) return;
+
+    lines.push(
+      `Repository guidance: ${sanitizeInline(guidance.filename)}`,
+      `- SHA-256: ${codeSpan(guidance.sha256)}`,
+      `- Size: ${guidance.sizeBytes} bytes`,
       '',
     );
   }

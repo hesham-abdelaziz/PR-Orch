@@ -6,10 +6,12 @@ import {
   reviewerRulesFor,
   finalReminder,
   guidanceSection,
+  repositoryGuidanceSection,
   jobContextSection,
   rulesSection,
   wrapUntrusted,
   type PromptPullRequest,
+  type PromptRepositoryGuidance,
   type PromptStandards,
   type PromptWorkspace,
 } from './core-review-policy.js';
@@ -20,6 +22,8 @@ export interface ReviewerPromptInput {
   pullRequest: PromptPullRequest;
   workspace: PromptWorkspace;
   standards: PromptStandards;
+  /** Per-review guidance attachment, fed once to every prompt of the run. */
+  repositoryGuidance?: PromptRepositoryGuidance | null;
   /** Areas the reviewer must cover; defaults to the fixed protocol areas only. */
   areas?: readonly ReviewArea[];
   additionalInstructions?: string;
@@ -40,6 +44,7 @@ export class ReviewerPromptBuilder {
       rulesSection('IMMUTABLE RULES', reviewerRulesFor(input.reviewer.provider)),
       jobContextSection(input.pullRequest, input.workspace),
       guidanceSection(input.standards, 'reviewer'),
+      ...repositoryGuidanceSection(input.repositoryGuidance),
       protocolSection(input.areas ?? reviewAreas()),
       severitySection(),
       `# OUTPUT SCHEMA\nAnswer with a single JSON object that validates against this JSON Schema:\n${REVIEWER_OUTPUT_JSON_SCHEMA_TEXT}`,
