@@ -11,7 +11,7 @@ import {
 } from '@pr-orchestrator/contracts';
 
 import { validateFindingPath, type PathRejection } from './finding-path.validator.js';
-import type { FindingOutput, ReviewerOutput } from './review-output.schemas.js';
+import type { FindingOutput, ReviewerOutput, VerifiedFindingOutput } from './review-output.schemas.js';
 
 export interface DroppedFinding {
   /** The finding title, or the path for a dropped coverage exclusion. */
@@ -31,7 +31,9 @@ export interface NormalizeVerifiedFindingInput {
   id: string;
   /** Derived by the engine from the decided candidates; never taken from model output. */
   origins: ModelSelection[];
-  output: FindingOutput;
+  output: VerifiedFindingOutput;
+  /** Copied verbatim from the chosen candidate by the assembler, never from model text. */
+  probe?: ReviewFinding['probe'];
   workspaceRoot: string;
 }
 
@@ -126,6 +128,7 @@ export class FindingNormalizerService {
     const finding = this.toFinding(input.origins[0] as ModelSelection, input.output, path.path, {
       id: input.id,
       origins: input.origins,
+      ...(input.probe === undefined ? {} : { probe: input.probe }),
     });
 
     return finding === undefined ? { ok: false, reason: 'invalid_finding' } : { ok: true, finding };
@@ -133,10 +136,11 @@ export class FindingNormalizerService {
 
   private toFinding(
     reviewer: ModelSelection,
-    raw: FindingOutput,
+    raw: FindingOutput | VerifiedFindingOutput,
     filePath: string,
-    identity?: { id: string; origins: ModelSelection[] },
+    identity?: { id: string; origins: ModelSelection[]; probe?: ReviewFinding['probe'] },
   ): ReviewFinding | undefined {
+    const probe = identity === undefined ? ('probe' in raw ? (raw.probe ?? undefined) : undefined) : identity.probe;
     const parsed = ReviewFindingSchema.safeParse({
       id: identity?.id ?? candidateId(reviewer, filePath, raw.location, raw.title),
       title: raw.title,
@@ -151,6 +155,7 @@ export class FindingNormalizerService {
       impact: raw.impact,
       suggestedFix: raw.suggestedFix,
       ...(raw.reference === null ? {} : { reference: raw.reference }),
+      ...(probe === undefined ? {} : { probe }),
       origins: identity?.origins ?? [reviewer],
     });
 

@@ -65,3 +65,16 @@ export function codeSpan(text: string): string {
 
   return `\`${flat}\``;
 }
+
+/**
+ * Fenced code block for model-authored code or output. The fence is longer than
+ * any backtick run in the text so the text cannot close it, and control and
+ * bidirectional characters are removed. Returns the lines of the block.
+ */
+export function codeBlock(text: string, language = ''): string[] {
+  const body = text.replace(/\r\n?/gu, '\n').replace(CONTROL_CHARACTERS, '').replace(BIDI_CONTROLS, '').trim();
+  const longest = Math.max(0, ...[...body.matchAll(/`+/gu)].map((run) => run[0].length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+
+  return [`${fence}${language}`, body, fence];
+}

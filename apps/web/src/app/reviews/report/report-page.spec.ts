@@ -1023,4 +1023,205 @@ describe('ReportPageComponent', () => {
     expect(el.querySelector('#review-coverage')).toBeNull();
     expect(el.querySelector('a.toc-link[href="#review-coverage"]')).toBeNull();
   });
+
+  it('renders reproduced badge and toggles probe section with plain text code blocks', async () => {
+    const reportWithProbe: VerifiedReport = {
+      ...mockReport,
+      findings: [
+        {
+          ...mockReport.findings[0],
+          probe: {
+            summary: 'Passing null token triggers immediate panic.',
+            script: 'const { exchange } = require("./token_exchange");\nexchange(null);',
+            output: 'panic: runtime error: invalid memory address or nil pointer dereference',
+          },
+        },
+        mockReport.findings[1],
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(reportWithProbe), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const cards = el.querySelectorAll('.finding-card');
+    expect(cards.length).toBe(2);
+
+    // First card has probe
+    const firstCard = cards[0];
+    const badge = firstCard.querySelector('.badge-reproduced');
+    expect(badge).toBeTruthy();
+    expect(badge?.textContent?.trim()).toBe('Reproduced');
+
+    // Section collapsed by default
+    const toggleBtn = firstCard.querySelector('.probe-toggle-btn') as HTMLButtonElement;
+    expect(toggleBtn).toBeTruthy();
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(firstCard.querySelector('.probe-details')).toBeNull();
+
+    // Expand probe section
+    toggleBtn.click();
+    fixture.detectChanges();
+
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
+    const details = firstCard.querySelector('.probe-details');
+    expect(details).toBeTruthy();
+    expect(firstCard.querySelector('.probe-summary-text')?.textContent?.trim()).toBe(
+      'Passing null token triggers immediate panic.',
+    );
+
+    const preBlocks = firstCard.querySelectorAll('.probe-code-block');
+    expect(preBlocks.length).toBe(2);
+    expect(preBlocks[0].getAttribute('aria-label')).toBe('Probe script');
+    expect(preBlocks[0].textContent).toContain('exchange(null);');
+    expect(preBlocks[1].getAttribute('aria-label')).toBe('Probe output');
+    expect(preBlocks[1].textContent).toContain('panic: runtime error');
+
+    // Second card has NO probe and is unchanged
+    const secondCard = cards[1];
+    expect(secondCard.querySelector('.badge-reproduced')).toBeNull();
+    expect(secondCard.querySelector('.probe-toggle-btn')).toBeNull();
+  });
+
+  it('filters findings list using Reproduced only chip and updates summary row', async () => {
+    const reportWithOneProbe: VerifiedReport = {
+      ...mockReport,
+      findings: [
+        {
+          ...mockReport.findings[0],
+          probe: {
+            summary: 'Token revocation bypass reproduced in sandbox.',
+            script: 'probeRevocation();',
+            output: 'Token granted successfully',
+          },
+        },
+        mockReport.findings[1], // No probe
+      ],
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}/report`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(reportWithOneProbe), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelectorAll('.finding-card').length).toBe(2);
+
+    // Check Reproduced tally in metadata summary strip
+    const reproducedTally = el.querySelector('.tally-reproduced .tally-num');
+    expect(reproducedTally?.textContent?.trim()).toBe('1');
+
+    // Check summary row count in findings section
+    const summaryCount = el.querySelector('.findings-summary-row .summary-count');
+    expect(summaryCount?.textContent).toContain('Showing 2 of 2');
+    expect(summaryCount?.textContent).toContain('1 reproduced');
+
+    // Click Reproduced only filter chip
+    const reproducedChip = el.querySelector('#reproduced-filter-chip') as HTMLButtonElement;
+    expect(reproducedChip).toBeTruthy();
+    expect(reproducedChip.textContent).toContain('Reproduced only (1)');
+
+    reproducedChip.click();
+    fixture.detectChanges();
+
+    // List narrows to only the 1 reproduced finding
+    const filteredCards = el.querySelectorAll('.finding-card');
+    expect(filteredCards.length).toBe(1);
+    expect(filteredCards[0].textContent).toContain('Missing revocation check');
+    expect(reproducedChip.classList.contains('active')).toBe(true);
+
+    // Summary row updates
+    expect(el.querySelector('.findings-summary-row .summary-count')?.textContent).toContain('Showing 1 of 2');
+
+    // Toggle chip off
+    reproducedChip.click();
+    fixture.detectChanges();
+
+    expect(el.querySelectorAll('.finding-card').length).toBe(2);
+  });
+
+  it('hides the Changes line in report metadata when diff stats are null', async () => {
+    const jobWithNullStats: ReviewJob = {
+      ...mockJob,
+      pullRequest: {
+        ...mockJob.pullRequest,
+        additions: null,
+        deletions: null,
+      },
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/reviews/${reviewId}`) {
+        return Promise.resolve(
+          new Response(JSON.stringify(jobWithNullStats), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      return defaultFetchHandler(input);
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('#meta-changes')).toBeNull();
+    expect(el.textContent).not.toContain('+0 / -0');
+  });
+
+  it('shows real additions and deletions in the Changes line when available', async () => {
+    // mockJob has additions: 482, deletions: 119
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const changesItem = el.querySelector('#meta-changes');
+    expect(changesItem).toBeTruthy();
+    expect(changesItem?.textContent).toContain('CHANGES');
+    expect(changesItem?.textContent).toContain('+482');
+    expect(changesItem?.textContent).toContain('-119');
+  });
+
+  it('renders legacy report fixture without probe exactly as before', async () => {
+    // mockReport has no probe on any finding
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const cards = el.querySelectorAll('.finding-card');
+    expect(cards.length).toBe(2);
+
+    expect(el.querySelectorAll('.badge-reproduced').length).toBe(0);
+    expect(el.querySelectorAll('.probe-section').length).toBe(0);
+
+    const reproducedTally = el.querySelector('.tally-reproduced .tally-num');
+    expect(reproducedTally?.textContent?.trim()).toBe('0');
+  });
 });
+

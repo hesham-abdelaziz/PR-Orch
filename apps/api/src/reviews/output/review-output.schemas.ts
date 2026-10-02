@@ -1,5 +1,6 @@
 import {
   CoverageExclusionSchema,
+  FindingProbeSchema,
   ReviewFindingSchema,
   ReviewerResultSchema,
   VerifiedReportSchema,
@@ -25,6 +26,7 @@ const LocationOutputSchema = z.strictObject({
   description: z.string().trim().min(1).max(500).nullable(),
 });
 
+/** A reviewer's finding. `probe` is required-but-nullable: null unless the reviewer ran one. */
 export const FindingOutputSchema = z.strictObject({
   title: ReviewFindingSchema.shape.title,
   severity: ReviewFindingSchema.shape.severity,
@@ -34,7 +36,11 @@ export const FindingOutputSchema = z.strictObject({
   impact: ReviewFindingSchema.shape.impact,
   suggestedFix: ReviewFindingSchema.shape.suggestedFix,
   reference: ReviewFindingSchema.shape.reference.unwrap().nullable(),
+  probe: FindingProbeSchema.nullable(),
 });
+
+/** The verifier's canonical finding: the probe is chosen by candidate id, never re-typed. */
+export const VerifiedFindingOutputSchema = FindingOutputSchema.omit({ probe: true });
 
 export const ExclusionOutputSchema = z.strictObject({
   path: PathTextSchema,
@@ -66,7 +72,12 @@ export const VerifierDecisionOutputSchema = z
      * away): why the candidates' location was wrong. Null otherwise.
      */
     locationCorrection: z.string().trim().min(1).max(1_000).nullable(),
-    finding: FindingOutputSchema.nullable(),
+    /**
+     * Id of the decided candidate whose probe the finding keeps; the engine
+     * copies it verbatim. Null when no probe supports the finding.
+     */
+    probeFromCandidate: z.string().uuid().nullable(),
+    finding: VerifiedFindingOutputSchema.nullable(),
   })
   .superRefine((decision, context) => {
     const requiresFinding = decision.verdict !== 'rejected';
@@ -85,6 +96,13 @@ export const VerifierDecisionOutputSchema = z
         message: 'Rejected decisions must set locationCorrection to null',
       });
     }
+    if (!requiresFinding && decision.probeFromCandidate !== null) {
+      context.addIssue({
+        code: 'custom',
+        path: ['probeFromCandidate'],
+        message: 'Rejected decisions must set probeFromCandidate to null',
+      });
+    }
     if (!requiresFinding && decision.finding !== null) {
       context.addIssue({
         code: 'custom',
@@ -101,6 +119,7 @@ export const VerifierOutputSchema = z.strictObject({
 });
 
 export type FindingOutput = z.infer<typeof FindingOutputSchema>;
+export type VerifiedFindingOutput = z.infer<typeof VerifiedFindingOutputSchema>;
 export type CoverageOutput = z.infer<typeof CoverageOutputSchema>;
 export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 export type VerifierDecisionOutput = z.infer<typeof VerifierDecisionOutputSchema>;

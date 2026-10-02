@@ -354,9 +354,10 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
   private async pipeline(ctx: Runtime): Promise<void> {
     if (!(await this.advance(ctx, 'preparing'))) return;
 
-    const record = await this.mustGet(ctx.jobId);
-    const ready = await this.prepareWorkspace(ctx, record);
+    const ready = await this.prepareWorkspace(ctx, await this.mustGet(ctx.jobId));
     if (!ready) return;
+    // Re-read: preparation stores the measured diff totals on the pull request summary.
+    const record = await this.mustGet(ctx.jobId);
 
     ctx.scratchDir = await mkdtemp(join(this.scratchRoot, 'pr-review-'));
     await writeFile(join(ctx.scratchDir, 'reviewer-output.schema.json'), REVIEWER_OUTPUT_JSON_SCHEMA_TEXT, 'utf8');
@@ -437,6 +438,7 @@ export class ReviewOrchestratorService implements OnApplicationBootstrap, OnModu
       ctx.jobId,
       {
         workspaceId: prepared.workspaceId,
+        ...(prepared.pullRequest ? { pullRequest: prepared.pullRequest } : {}),
         cleanupPending: true,
         exclusions: ctx.exclusions,
         warnings: ctx.warnings,

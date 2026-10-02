@@ -230,3 +230,48 @@ describe('ReviewerPromptBuilder', () => {
     expect(builder.build(input())).not.toMatch(/other reviewer|previous transcript/i);
   });
 });
+
+describe('runtime probe rules', () => {
+  const codex = { provider: 'codex', model: 'gpt' } as const;
+
+  it('lets only Codex reviewers probe, in memory, with the forbidden list intact', () => {
+    const prompt = builder.build(input({ reviewer: codex }));
+
+    expect(prompt).toMatch(/probe scripts that evaluate the pull request's own pure code in memory/u);
+    expect(prompt).toMatch(/`node -e`, `tsx -e`/u);
+    expect(prompt).toMatch(/may not import anything from outside it/u);
+    expect(prompt).toMatch(/Forbidden without exception: running tests, builds, linters, formatters, package managers \(`npm`, `npx`, `pnpm`, `yarn`\), or any repository script; writing any file; any network access/u);
+    expect(prompt).toMatch(/never contact Azure DevOps/u);
+    expect(prompt).not.toMatch(/static (?:code )?inspection only/iu);
+  });
+
+  it('keeps probes additional evidence: the finding still needs file, lines and a quoted excerpt', () => {
+    const prompt = builder.build(input({ reviewer: codex }));
+
+    expect(prompt).toMatch(/A probe is additional evidence/u);
+    expect(prompt).toMatch(/still needs its file, line range and quoted excerpt of the code under test/u);
+    expect(prompt).toMatch(/never invent, edit or paraphrase probe output/u);
+  });
+
+  it.each(['claude', 'gemini'] as const)('keeps %s reviewers static and tells them to leave probe null', (provider) => {
+    const prompt = builder.build(input({ reviewer: { provider, model: 'm' } }));
+
+    expect(prompt).toMatch(/static (?:code )?inspection only/iu);
+    expect(prompt).toMatch(/never execute repository code/u);
+    expect(prompt).not.toMatch(/probe scripts/u);
+    expect(prompt).not.toContain('`node -e`');
+    expect(prompt).toMatch(/Set `probe` to null in every finding/u);
+  });
+
+  it('asks every reviewer to attack untrusted-input shapes and offers the severity calibration', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toContain('[untrusted-input] Untrusted input shapes');
+    expect(prompt).toMatch(/null entries/u);
+    expect(prompt).toMatch(/Calibrate severity by runtime impact/u);
+  });
+
+  it('puts the probe field, with its limits, in the reviewer output schema', () => {
+    expect(builder.build(input({ reviewer: codex }))).toMatch(/"probe":\{"anyOf":\[\{"type":"object","properties":\{"summary"/u);
+  });
+});

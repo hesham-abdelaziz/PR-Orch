@@ -2,7 +2,7 @@ import { ReviewerResultSchema, type ModelSelection } from '@pr-orchestrator/cont
 import { describe, expect, it } from 'vitest';
 
 import { FindingNormalizerService } from './finding-normalizer.service.js';
-import type { ReviewerOutput } from './review-output.schemas.js';
+import { ReviewerOutputSchema, type ReviewerOutput } from './review-output.schemas.js';
 
 const ROOT = 'C:\\work\\job-1\\checkout';
 const claude: ModelSelection = { provider: 'claude', model: 'opus' };
@@ -18,6 +18,7 @@ function finding(overrides: Partial<ReviewerOutput['findings'][number]> = {}) {
     impact: 'The loader throws for empty configuration.',
     suggestedFix: 'Guard config before reading value.',
     reference: null,
+    probe: null,
     ...overrides,
   };
 }
@@ -209,5 +210,37 @@ describe('FindingNormalizerService', () => {
 
       expect(outcome).toEqual({ ok: false, reason: 'invalid_finding' });
     });
+  });
+});
+
+describe('probe evidence', () => {
+  const probe = { summary: 'A null page_sections entry throws.', script: 'node -e "[null].filter(s => s.id)"', output: "TypeError: Cannot read properties of null (reading 'id')" };
+
+  it('carries a reviewer probe onto the candidate and leaves findings without one untouched', () => {
+    const { result } = new FindingNormalizerService().normalizeReviewer({
+      reviewer: claude,
+      workspaceRoot: ROOT,
+      output: output(finding({ probe }), finding({ title: 'Second finding without probe', probe: null })),
+    });
+
+    expect(result.findings[0]?.probe).toEqual(probe);
+    expect(result.findings[1]).not.toHaveProperty('probe');
+  });
+
+  it('applies a probe handed over by the assembler to a verified finding, never one from model text', () => {
+    const normalized = new FindingNormalizerService().normalizeVerifiedFinding({
+      id: '00000000-0000-4000-8000-0000000000aa',
+      origins: [claude],
+      output: (({ probe: _unused, ...rest }) => rest)(finding({})),
+      probe,
+      workspaceRoot: ROOT,
+    });
+
+    expect(normalized.ok && normalized.finding.probe).toEqual(probe);
+  });
+
+  it('rejects a reviewer output whose probe has an empty script or output', () => {
+    expect(ReviewerOutputSchema.safeParse({ findings: [finding({ probe: { ...probe, script: '' } })], warnings: [], exclusions: [], coverage: [] }).success).toBe(false);
+    expect(ReviewerOutputSchema.safeParse({ findings: [finding({ probe: { ...probe, output: ' ' } })], warnings: [], exclusions: [], coverage: [] }).success).toBe(false);
   });
 });

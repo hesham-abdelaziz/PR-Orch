@@ -16,6 +16,7 @@ describe('PROTOCOL_AREAS', () => {
     expect(ids).toEqual([
       'intent',
       'correctness',
+      'untrusted-input',
       'error-handling',
       'security',
       'contracts',

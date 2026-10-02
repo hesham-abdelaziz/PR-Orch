@@ -68,6 +68,15 @@ export const ReviewerCoverageSchema = z.strictObject({
   areas: z.array(ReviewAreaCoverageSchema).max(200),
 });
 
+export const FindingProbeSchema = z.strictObject({
+  /** What the probe demonstrates, one sentence. */
+  summary: z.string().trim().min(1).max(300),
+  /** The exact code that was run (in-memory, no repo writes). */
+  script: z.string().trim().min(1).max(4000),
+  /** The observed output or thrown error. */
+  output: z.string().trim().min(1).max(2000),
+});
+
 export const ReviewFindingSchema = z.strictObject({
   id: z.string().uuid(),
   title: z.string().trim().min(3).max(200),
@@ -78,6 +87,7 @@ export const ReviewFindingSchema = z.strictObject({
   impact: z.string().trim().min(1).max(5_000),
   suggestedFix: z.string().trim().min(1).max(5_000),
   reference: z.string().trim().min(1).max(1_000).optional(),
+  probe: FindingProbeSchema.optional(),
   origins: z.array(ModelSelectionSchema).min(1).max(8),
 });
 
@@ -144,6 +154,7 @@ export type Severity = z.infer<typeof SeveritySchema>;
 export type ReviewAreaCoverage = z.infer<typeof ReviewAreaCoverageSchema>;
 export type ReviewerCoverage = z.infer<typeof ReviewerCoverageSchema>;
 export type ReviewFinding = z.infer<typeof ReviewFindingSchema>;
+export type FindingProbe = z.infer<typeof FindingProbeSchema>;
 export type ReviewerResult = z.infer<typeof ReviewerResultSchema>;
 export type VerifierDecision = z.infer<typeof VerifierDecisionSchema>;
 export type VerifiedReport = z.infer<typeof VerifiedReportSchema>;

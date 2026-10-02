@@ -30,14 +30,17 @@ const wire = (source: typeof a): NonNullable<VerifierOutput['decisions'][number]
   reference: null,
 });
 
-type WireDecision = Omit<VerifierOutput['decisions'][number], 'locationCorrection'> & { locationCorrection?: string | null };
+type WireDecision = Omit<VerifierOutput['decisions'][number], 'locationCorrection' | 'probeFromCandidate'> & {
+  locationCorrection?: string | null;
+  probeFromCandidate?: string | null;
+};
 
 function assemble(decisions: WireDecision[], candidates = [a, b, c]) {
   return assembleVerifiedReport({
     reviewId: '00000000-0000-4000-8000-0000000000aa',
     output: {
       summary: 'Summary.',
-      decisions: decisions.map((decision) => ({ locationCorrection: null, ...decision })),
+      decisions: decisions.map((decision) => ({ locationCorrection: null, probeFromCandidate: null, ...decision })),
       warnings: ['verifier note'],
     },
     candidates,
@@ -248,7 +251,7 @@ describe('assembleVerifiedReport', () => {
       const parsed = VerifierOutputSchema.safeParse({
         summary: 's',
         warnings: [],
-        decisions: [{ candidateIds: [a.id], verdict: 'accepted', rationale: 'r', locationCorrection: null, finding: { ...wire(a), origins: [claude] } }],
+        decisions: [{ candidateIds: [a.id], verdict: 'accepted', rationale: 'r', locationCorrection: null, probeFromCandidate: null, finding: { ...wire(a), origins: [claude] } }],
       });
 
       expect(parsed.success).toBe(false);
@@ -256,3 +259,51 @@ describe('assembleVerifiedReport', () => {
   });
 });
 
+
+describe('probe evidence', () => {
+  const probe = {
+    summary: 'A null entry makes the predicate throw.',
+    script: 'node -e "[null].some(s => s.id)"',
+    output: "TypeError: Cannot read properties of null (reading 'id')",
+  };
+  const withProbe = { ...a, probe };
+  const accept = (probeFromCandidate: string | null, source: typeof a = withProbe) => [
+    { candidateIds: [source.id], verdict: 'accepted' as const, rationale: 'The output follows from the cited code.', probeFromCandidate, finding: wire(source) },
+  ];
+
+  it('copies the chosen candidate probe verbatim onto the verified finding and the report', async () => {
+    const outcome = await assemble(accept(withProbe.id), [withProbe]);
+
+    if (!outcome.ok) throw new Error(outcome.issues.join('; '));
+    expect(outcome.report.findings[0]?.probe).toEqual(probe);
+    expect(outcome.finalFindings[0]?.finding.probe).toEqual(probe);
+  });
+
+  it('keeps the probe of whichever merged candidate the verifier names', async () => {
+    const other = { ...b, filePath: a.filePath, location: a.location };
+    const outcome = await assemble(
+      [{ candidateIds: [other.id, withProbe.id], verdict: 'merged', rationale: 'Same defect.', probeFromCandidate: withProbe.id, finding: wire(a) }],
+      [other, withProbe],
+    );
+
+    if (!outcome.ok) throw new Error(outcome.issues.join('; '));
+    expect(outcome.report.findings[0]?.probe).toEqual(probe);
+  });
+
+  it('drops the probe when the verifier does not name a candidate', async () => {
+    const outcome = await assemble(accept(null), [withProbe]);
+
+    if (!outcome.ok) throw new Error(outcome.issues.join('; '));
+    expect(outcome.report.findings[0]).not.toHaveProperty('probe');
+  });
+
+  it('refuses a probe source that is not a decided candidate or has no probe', async () => {
+    const stranger = await assemble(accept(b.id), [withProbe, b]);
+    expect(stranger.ok).toBe(false);
+    if (!stranger.ok) expect(stranger.issues.join(' ')).toMatch(/probeFromCandidate must be one of the candidate ids/u);
+
+    const none = await assemble(accept(a.id, a), [a]);
+    expect(none.ok).toBe(false);
+    if (!none.ok) expect(none.issues.join(' ')).toMatch(/has no probe/u);
+  });
+});

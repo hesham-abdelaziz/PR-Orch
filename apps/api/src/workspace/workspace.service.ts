@@ -13,7 +13,7 @@ export class WorkspaceService {
     if (!isAbsolute(root)) throw new Error('Workspace root must be absolute');
     this.git = new GitProcessService(gitExecutable, () => secrets.values());
   }
-  async prepare(input: PrepareWorkspaceInput, signal: AbortSignal): Promise<PreparedWorkspace> {
+  async prepare(input: PrepareWorkspaceInput, signal: AbortSignal): Promise<PreparedWorkspace & { pullRequest: PullRequestSummary }> {
     const pr = PullRequestSummarySchema.parse(input.pullRequest); parseAzurePrUrl(pr.url);
     const settings = await this.getSettings();
     await mkdir(this.root, { recursive: true });
@@ -59,6 +59,22 @@ export class WorkspaceService {
       if (Buffer.byteLength(diff) > settings.limits.hardDiffBytes) throw new Error('PR exceeds diff hard limit');
       const changed = (await run(['diff', '--name-only', '-z', ...comparison])).split('\0').filter(Boolean);
       if (changed.length > settings.limits.hardChangedFiles) throw new Error('PR exceeds changed-file hard limit');
+      const numstat = (await run(['diff', '--numstat', '-z', ...comparison])).split('\0');
+      let additions = 0; let deletions = 0;
+      for (let index = 0; index < numstat.length; index++) {
+        const entry = numstat[index]!;
+        if (!entry) continue;
+        const firstTab = entry.indexOf('\t'); const secondTab = entry.indexOf('\t', firstTab + 1);
+        if (firstTab < 0 || secondTab < 0) throw new Error('Invalid Git numstat output');
+        const added = entry.slice(0, firstTab); const deleted = entry.slice(firstTab + 1, secondTab);
+        // Renames have an empty path in the header, then two NUL-delimited paths.
+        if (entry.length === secondTab + 1) index += 2;
+        if (added === '-' && deleted === '-') continue;
+        if (!/^\d+$/.test(added) || !/^\d+$/.test(deleted)) throw new Error('Invalid Git numstat counts');
+        additions += Number(added); deletions += Number(deleted);
+        if (!Number.isSafeInteger(additions) || !Number.isSafeInteger(deletions)) throw new Error('Git numstat counts exceed safe integer range');
+      }
+      const pullRequest = PullRequestSummarySchema.parse({ ...pr, additions, deletions });
       const exclusions: PreparedWorkspace['exclusions'] = []; const warnings: string[] = [];
       if (changed.length !== pr.changedFiles) warnings.push(`Pinned merge-base diff contains ${changed.length} paths; Azure iteration metadata reports ${pr.changedFiles} tracked changes. Counts can differ for iteration target snapshots or rename tracking; inspect metadata before treating this as a defect.`);
       for (const path of changed) {
@@ -81,10 +97,10 @@ export class WorkspaceService {
       const technologies: Record<string, unknown> = {};
       try { const manifest = JSON.parse(await readFile(join(checkoutPath, 'package.json'), 'utf8')); technologies.dependencies = manifest.dependencies ?? {}; technologies.devDependencies = manifest.devDependencies ?? {}; } catch { /* no JavaScript manifest */ }
       const diffPath = join(rootPath, 'diff.patch'); const metadataPath = join(rootPath, 'metadata.json'); const technologyManifestPath = join(rootPath, 'technology.json');
-      await writeFile(diffPath, diff); await writeFile(metadataPath, JSON.stringify({ pullRequest: pr, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, commonAncestorCommit, comparisonMode: 'merge-base-to-source', changedFiles: changed, exclusions, warnings })); await writeFile(technologyManifestPath, JSON.stringify(technologies));
+      await writeFile(diffPath, diff); await writeFile(metadataPath, JSON.stringify({ pullRequest, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, commonAncestorCommit, comparisonMode: 'merge-base-to-source', changedFiles: changed, exclusions, warnings })); await writeFile(technologyManifestPath, JSON.stringify(technologies));
       let standardsPath: string | null = null;
       if (input.standards) { standardsPath = join(rootPath, 'standards.txt'); await writeFile(standardsPath, await readFile(input.standards.storagePath)); }
-      return { workspaceId, rootPath, checkoutPath, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, diffPath, metadataPath, technologyManifestPath, standardsPath, exclusions, warnings };
+      return { workspaceId, rootPath, checkoutPath, sourceCommit: pr.sourceCommit, targetCommit: pr.targetCommit, pullRequest, diffPath, metadataPath, technologyManifestPath, standardsPath, exclusions, warnings };
     } catch (error) { await this.cleanup(workspaceId); throw error; }
   }
   async cleanup(id: string): Promise<void> {

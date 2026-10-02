@@ -49,6 +49,11 @@ export interface PreparedWorkspace {
   technologyManifestPath: string;
   /** Absolute path of the job's standards copy, or null to use the snapshot's `storagePath`. */
   standardsPath: string | null;
+  /**
+   * The pull request summary with additions and deletions measured from the
+   * pinned merge-base-to-source diff. Optional so older ports keep working.
+   */
+  pullRequest?: PullRequestSummary;
   exclusions: CoverageExclusion[];
   warnings: string[];
 }

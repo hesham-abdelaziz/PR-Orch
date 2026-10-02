@@ -3,7 +3,7 @@ import type { ModelSelection } from '@pr-orchestrator/contracts';
 
 import { REVIEWER_OUTPUT_JSON_SCHEMA_TEXT } from '../output/provider-json-schema.js';
 import {
-  CORE_REVIEW_RULES,
+  reviewerRulesFor,
   finalReminder,
   guidanceSection,
   jobContextSection,
@@ -37,7 +37,7 @@ export class ReviewerPromptBuilder {
 
     return [
       '# ROLE\nYou are an independent code reviewer. Work only from the checkout and the files named below.',
-      rulesSection('IMMUTABLE RULES', CORE_REVIEW_RULES),
+      rulesSection('IMMUTABLE RULES', reviewerRulesFor(input.reviewer.provider)),
       jobContextSection(input.pullRequest, input.workspace),
       guidanceSection(input.standards, 'reviewer'),
       protocolSection(input.areas ?? reviewAreas()),

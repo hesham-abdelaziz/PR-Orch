@@ -35,6 +35,15 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
           </span>
         </div>
 
+        @if (hasChanges()) {
+          <div class="meta-item changes-line" id="meta-changes">
+            <span class="meta-label font-mono">CHANGES</span>
+            <span class="meta-val font-mono">
+              <span class="text-additions">+{{ job.pullRequest.additions }}</span> / <span class="text-deletions">-{{ job.pullRequest.deletions }}</span>
+            </span>
+          </div>
+        }
+
         <div class="meta-item">
           <span class="meta-label font-mono">AUTHOR</span>
           <span class="meta-val truncate" [title]="job.pullRequest.author.displayName">
@@ -75,6 +84,10 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
         <div class="tally-box">
           <span class="tally-num font-mono text-accepted">{{ report.acceptedCount }}</span>
           <span class="tally-label">Accepted Findings</span>
+        </div>
+        <div class="tally-box tally-reproduced">
+          <span class="tally-num font-mono text-reproduced">{{ reproducedCount() }}</span>
+          <span class="tally-label">Reproduced</span>
         </div>
         <div class="tally-box">
           <span class="tally-num font-mono text-rejected">{{ report.rejectedCount }}</span>
@@ -241,7 +254,7 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
       border: 1px solid $border-subtle;
 
       @media (min-width: 768px) {
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
       }
     }
 
@@ -262,8 +275,11 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
     }
 
     .text-accepted { color: $severity-critical; }
+    .text-reproduced { color: $accent-verifier; }
     .text-rejected { color: $status-clean; }
     .text-warning { color: $severity-medium; }
+    .text-additions { color: $status-clean; }
+    .text-deletions { color: $severity-critical; }
 
     .truncate {
       @include truncate;
@@ -277,4 +293,17 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
 export class ReportMetadataComponent {
   @Input({ required: true }) job!: ReviewJob;
   @Input({ required: true }) report!: VerifiedReport;
+
+  hasChanges(): boolean {
+    return (
+      this.job?.pullRequest?.additions !== null &&
+      this.job?.pullRequest?.additions !== undefined &&
+      this.job?.pullRequest?.deletions !== null &&
+      this.job?.pullRequest?.deletions !== undefined
+    );
+  }
+
+  reproducedCount(): number {
+    return this.report?.findings ? this.report.findings.filter((f) => !!f.probe).length : 0;
+  }
 }

@@ -116,9 +116,24 @@ export async function assembleVerifiedReport(input: AssembleInput): Promise<Asse
       }
     }
 
+    let probe: ReviewFinding['probe'];
+    if (raw.probeFromCandidate !== null) {
+      const source = referenced.find((candidate) => candidate.id === raw.probeFromCandidate);
+      if (source === undefined) {
+        issues.push(`${label}: probeFromCandidate must be one of the candidate ids this decision covers, or null.`);
+        continue;
+      }
+      if (source.probe === undefined) {
+        issues.push(`${label}: candidate ${source.id} has no probe; set probeFromCandidate to null or to a candidate that has one.`);
+        continue;
+      }
+      probe = source.probe;
+    }
+
     const normalized = input.normalizer.normalizeVerifiedFinding({
       id: raw.verdict === 'accepted' ? (ids[0] as string) : stableUuid(`merged\u0000${[...ids].sort().join(',')}`),
       origins,
+      ...(probe === undefined ? {} : { probe }),
       output: raw.finding,
       workspaceRoot: input.workspaceRoot,
     });

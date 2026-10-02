@@ -311,25 +311,106 @@ const SEVERITY_WEIGHT: Record<string, number> = {
 
               <section id="findings" class="report-section findings-section">
                 <div class="section-header">
-                  <h2 class="section-heading font-mono">
-                    VERIFIED FINDINGS ({{ report()!.findings.length }})
-                  </h2>
-                  <span class="section-subtext font-mono">
-                    Filtered and verified against codebase by {{ job()!.main.model }}
-                  </span>
+                  <div class="section-title-group">
+                    <h2 class="section-heading font-mono">
+                      VERIFIED FINDINGS ({{ report()!.findings.length }})
+                    </h2>
+                    <span class="section-subtext font-mono">
+                      Filtered and verified against codebase by {{ job()!.main.model }}
+                    </span>
+                  </div>
+
+                  @if (report()!.findings.length > 0) {
+                    <div class="findings-filter-toolbar" role="toolbar" aria-label="Filter findings">
+                      <div class="filter-chips">
+                        <button
+                          type="button"
+                          class="filter-chip font-mono"
+                          [class.active]="severityFilter() === 'all'"
+                          (click)="setSeverityFilter('all')"
+                          aria-label="Show all findings"
+                        >
+                          All ({{ report()!.findings.length }})
+                        </button>
+                        <button
+                          type="button"
+                          class="filter-chip font-mono chip-critical"
+                          [class.active]="severityFilter() === 'critical'"
+                          (click)="setSeverityFilter('critical')"
+                          aria-label="Filter critical findings"
+                        >
+                          Critical ({{ countBySeverity('critical') }})
+                        </button>
+                        <button
+                          type="button"
+                          class="filter-chip font-mono chip-high"
+                          [class.active]="severityFilter() === 'high'"
+                          (click)="setSeverityFilter('high')"
+                          aria-label="Filter high findings"
+                        >
+                          High ({{ countBySeverity('high') }})
+                        </button>
+                        <button
+                          type="button"
+                          class="filter-chip font-mono chip-medium"
+                          [class.active]="severityFilter() === 'medium'"
+                          (click)="setSeverityFilter('medium')"
+                          aria-label="Filter medium findings"
+                        >
+                          Medium ({{ countBySeverity('medium') }})
+                        </button>
+                        <button
+                          type="button"
+                          class="filter-chip font-mono chip-low"
+                          [class.active]="severityFilter() === 'low'"
+                          (click)="setSeverityFilter('low')"
+                          aria-label="Filter low findings"
+                        >
+                          Low ({{ countBySeverity('low') }})
+                        </button>
+                        <button
+                          type="button"
+                          id="reproduced-filter-chip"
+                          class="filter-chip font-mono chip-reproduced"
+                          [class.active]="reproducedOnly()"
+                          [attr.aria-pressed]="reproducedOnly()"
+                          (click)="toggleReproducedOnly()"
+                          aria-label="Filter reproduced findings only"
+                        >
+                          Reproduced only ({{ reproducedFindingsCount() }})
+                        </button>
+                      </div>
+
+                      <div class="findings-summary-row font-mono">
+                        <span class="summary-count">
+                          Showing {{ displayedFindings().length }} of {{ report()!.findings.length }}
+                          @if (reproducedFindingsCount() > 0) {
+                            ({{ reproducedFindingsCount() }} reproduced)
+                          }
+                        </span>
+                      </div>
+                    </div>
+                  }
                 </div>
 
-                @if (sortedFindings().length === 0) {
-                  <div class="clean-state-card font-mono">
-                    <div class="clean-icon">✓</div>
-                    <h3 class="clean-title">No Verified Findings</h3>
-                    <p class="clean-desc">
-                      The verifier engine reviewed all candidate claims submitted by parallel models and found zero valid security vulnerabilities or code defects in this pull request.
-                    </p>
-                  </div>
+                @if (displayedFindings().length === 0) {
+                  @if (report()!.findings.length === 0) {
+                    <div class="clean-state-card font-mono">
+                      <div class="clean-icon">✓</div>
+                      <h3 class="clean-title">No Verified Findings</h3>
+                      <p class="clean-desc">
+                        The verifier engine reviewed all candidate claims submitted by parallel models and found zero valid security vulnerabilities or code defects in this pull request.
+                      </p>
+                    </div>
+                  } @else {
+                    <div class="empty-filter-state font-mono">
+                      <p>No findings match the selected filters.</p>
+                      <button class="btn btn-secondary font-mono btn-sm" (click)="resetFilters()">Reset Filters</button>
+                    </div>
+                  }
                 } @else {
                   <div class="findings-list">
-                    @for (finding of sortedFindings(); track finding.id) {
+                    @for (finding of displayedFindings(); track finding.id) {
                       <app-finding-card [finding]="finding"></app-finding-card>
                     }
                   </div>
@@ -373,7 +454,7 @@ const SEVERITY_WEIGHT: Record<string, number> = {
 
             <aside class="report-sidebar">
               <app-report-toc
-                [findings]="sortedFindings()"
+                [findings]="displayedFindings()"
                 [decisions]="report()!.decisions"
                 [exclusions]="report()!.exclusions"
                 [warnings]="report()!.warnings"
@@ -827,6 +908,107 @@ const SEVERITY_WEIGHT: Record<string, number> = {
       }
     }
 
+    .findings-filter-toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
+      padding: 12px 14px;
+      background: $bg-surface-1;
+      border: 1px solid $border-subtle;
+      border-radius: 6px;
+    }
+
+    .filter-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .filter-chip {
+      @include mono-badge;
+      background: $bg-surface-2;
+      border: 1px solid $border-subtle;
+      color: $text-secondary;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+
+      &:hover {
+        background: $bg-surface-3;
+        color: $text-primary;
+      }
+
+      &:focus-visible {
+        outline: 2px solid $accent-primary;
+      }
+
+      &.active {
+        background: rgba(56, 189, 248, 0.2);
+        color: $accent-primary;
+        border-color: $accent-primary;
+        font-weight: 600;
+      }
+
+      &.chip-critical.active {
+        background: rgba(248, 81, 73, 0.2);
+        color: $severity-critical;
+        border-color: $severity-critical;
+      }
+
+      &.chip-high.active {
+        background: rgba(249, 115, 22, 0.2);
+        color: $severity-high;
+        border-color: $severity-high;
+      }
+
+      &.chip-medium.active {
+        background: rgba(245, 158, 11, 0.2);
+        color: $severity-medium;
+        border-color: $severity-medium;
+      }
+
+      &.chip-reproduced {
+        border-color: rgba(163, 113, 247, 0.3);
+        color: $accent-verifier;
+
+        &:hover {
+          background: rgba(163, 113, 247, 0.15);
+        }
+
+        &.active {
+          background: $accent-verifier-bg;
+          color: #c084fc;
+          border-color: $accent-verifier;
+          font-weight: 700;
+        }
+      }
+    }
+
+    .findings-summary-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: $text-muted;
+    }
+
+    .empty-filter-state {
+      padding: 24px;
+      text-align: center;
+      background: $bg-surface-2;
+      border: 1px dashed $border-subtle;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      color: $text-muted;
+      p { margin: 0; }
+    }
+
     .truncate { @include truncate; }
     .font-mono { font-family: $font-mono; }
     .ml-auto { margin-left: auto; }
@@ -861,6 +1043,30 @@ export class ReportPageComponent implements OnInit, OnDestroy {
   private currentRequestId = 0;
   private eventSubscription: Subscription | null = null;
 
+  readonly severityFilter = signal<string>('all');
+  readonly reproducedOnly = signal<boolean>(false);
+
+  readonly reproducedFindingsCount = computed<number>(() => {
+    return (this.report()?.findings ?? []).filter((f) => !!f.probe).length;
+  });
+
+  countBySeverity(severity: string): number {
+    return (this.report()?.findings ?? []).filter((f) => f.severity === severity).length;
+  }
+
+  setSeverityFilter(severity: string): void {
+    this.severityFilter.set(severity);
+  }
+
+  toggleReproducedOnly(): void {
+    this.reproducedOnly.update((v) => !v);
+  }
+
+  resetFilters(): void {
+    this.severityFilter.set('all');
+    this.reproducedOnly.set(false);
+  }
+
   readonly sortedFindings = computed<ReviewFinding[]>(() => {
     const findings = this.report()?.findings ?? [];
     return [...findings].sort((a, b) => {
@@ -868,6 +1074,18 @@ export class ReportPageComponent implements OnInit, OnDestroy {
       const weightB = SEVERITY_WEIGHT[b.severity] ?? 0;
       return weightB - weightA;
     });
+  });
+
+  readonly displayedFindings = computed<ReviewFinding[]>(() => {
+    let list = this.sortedFindings();
+    if (this.reproducedOnly()) {
+      list = list.filter((f) => !!f.probe);
+    }
+    const sev = this.severityFilter();
+    if (sev !== 'all') {
+      list = list.filter((f) => f.severity === sev);
+    }
+    return list;
   });
 
   readonly isInProgress = computed<boolean>(() => {

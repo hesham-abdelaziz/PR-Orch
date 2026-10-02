@@ -262,3 +262,76 @@ describe('ReportRenderer', () => {
     expect(markdown).toMatch(/- Reviewer gemini\/pro: timed out/u);
   });
 });
+
+describe('ReportRenderer runtime probes and diff totals', () => {
+  const probe = {
+    summary: 'A null page_sections entry throws in the predicate.',
+    script: 'const rows = [null];\nrows.some((row) => row.id);',
+    output: "TypeError: Cannot read properties of null (reading 'id')",
+  };
+  const probed = finding({ id: uuid(), title: 'Null entry crashes mapper', probe });
+
+  const withFinding = () => input({ report: report([probed], [accepted(probed, uuid())]) });
+
+  it('renders a Reproduced block with the summary, script and output in fenced blocks', () => {
+    const markdown = renderer.render(withFinding());
+
+    expect(markdown).toContain('**Reproduced**');
+    expect(markdown).toContain('A null page_sections entry throws in the predicate.');
+    expect(markdown).toContain('```js\nconst rows = [null];\nrows.some((row) => row.id);\n```');
+    expect(markdown).toContain("```\nTypeError: Cannot read properties of null (reading 'id')\n```");
+  });
+
+  it('omits the Reproduced block for findings without a probe', () => {
+    const plain = finding({ id: uuid(), title: 'No probe here' });
+
+    expect(renderer.render(input({ report: report([plain], [accepted(plain, uuid())]) }))).not.toContain('**Reproduced**');
+  });
+
+  it('cannot be forged out of its fence by backticks in the script or output', () => {
+    const hostile = finding({
+      id: uuid(),
+      probe: { summary: 'Hostile probe.', script: 'console.log(1)\n```\n# Injected heading', output: '````\n## Another' },
+    });
+    const markdown = renderer.render(input({ report: report([hostile], [accepted(hostile, uuid())]) }));
+
+    expect(markdown).toContain('````js\nconsole.log(1)\n```\n# Injected heading\n````');
+    expect(markdown).toContain('`````\n````\n## Another\n`````');
+  });
+
+  it('says which reviewers were allowed to probe and that the verifier was static', () => {
+    const markdown = renderer.render(withFinding());
+
+    expect(markdown).toMatch(/- Reviewer codex\/cli-default: completed — static inspection plus runtime probes/u);
+    expect(markdown).toMatch(/- Reviewer gemini\/pro: timed out — static inspection only \(Timed out after 600 s\.\)/u);
+    expect(markdown).toContain('- Main verifier: static inspection only; it cannot re-run probes');
+    expect(markdown).toContain('Runtime probes were allowed for codex/cli-default');
+    expect(markdown).toMatch(/ran small in-memory probes/u);
+  });
+
+  it('keeps the static-only wording when no reviewer may probe', () => {
+    const markdown = renderer.render(
+      input({
+        job: job({ reviewers: [{ id: uuid(), selection: gemini, state: 'completed', startedAt: null, completedAt: null, warning: null }] }),
+      }),
+    );
+
+    expect(markdown).toMatch(/result of a static code inspection/u);
+    expect(markdown).not.toContain('Runtime probes were allowed');
+    expect(markdown).not.toContain('**Reproduced**');
+  });
+
+  it('prints measured additions and deletions, including real zeros', () => {
+    expect(renderer.render(input())).toContain('- Changes: 4 files, +120 / -7');
+    expect(renderer.render(input({ job: job({ pullRequest: { ...pullRequest(), additions: 0, deletions: 0 } }) }))).toContain('+0 / -0');
+  });
+
+  it('omits the totals instead of printing +0 / -0 when they are unknown', () => {
+    for (const totals of [{ additions: null, deletions: null }, { additions: 5, deletions: null }]) {
+      const markdown = renderer.render(input({ job: job({ pullRequest: { ...pullRequest(), ...totals } }) }));
+
+      expect(markdown).toMatch(/- Changes: \d+ files\n/u);
+      expect(markdown).not.toMatch(/\+\d+ \/ -/u);
+    }
+  });
+});

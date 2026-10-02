@@ -11,12 +11,33 @@ import {
   ReasoningEffortSchema,
   ReviewEventSchema,
   ReviewFindingSchema,
+  PullRequestSummarySchema,
   assertModelSelectionSupported,
   getSupportedReasoningEfforts,
   isReasoningEffortSupported,
 } from './index.js';
 
 const reviewer = { provider: 'codex', model: 'gpt-codex' } as const;
+
+describe('pull request line totals', () => {
+  const summary = {
+    url: 'https://dev.azure.com/org/project/_git/repo/pullrequest/12',
+    organization: 'org', project: 'project', repository: 'repo', pullRequestId: 12,
+    title: 'Review', author: { id: 'author', displayName: 'Author' },
+    sourceBranch: 'feature', targetBranch: 'main', sourceCommit: 'a'.repeat(40), targetCommit: 'b'.repeat(40),
+    changedFiles: 5, additions: 4, deletions: 2, updatedAt: '2026-10-02T00:00:00.000Z',
+  };
+
+  it.each([null, 0, 4])('accepts unknown or measured totals %j without breaking stored summaries', count => {
+    const input = { ...summary, additions: count, deletions: count };
+    expect(PullRequestSummarySchema.parse(input)).toEqual(input);
+  });
+
+  it.each([-1, 0.5, undefined, '4'])('rejects invalid totals %j', count => {
+    expect(PullRequestSummarySchema.safeParse({ ...summary, additions: count }).success).toBe(false);
+    expect(PullRequestSummarySchema.safeParse({ ...summary, deletions: count }).success).toBe(false);
+  });
+});
 
 describe('shared contracts', () => {
   it('rejects_unknown_provider', () => {

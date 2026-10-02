@@ -6,9 +6,13 @@ import {
   ReviewAreaStatusSchema,
   ReviewerCoverageSchema,
   ReviewerResultSchema,
+  ReviewFindingSchema,
+  FindingProbeSchema,
+  VerifierDecisionSchema,
   VerifiedReportSchema,
   type ReviewAreaCoverage,
   type ReviewerCoverage,
+  type FindingProbe,
 } from './index.js';
 
 const reviewer = { provider: 'codex', model: 'gpt-codex' } as const;
@@ -114,5 +118,43 @@ describe('review coverage contracts', () => {
     expect(VerifiedReportSchema.safeParse({ ...report, coverage: reviewers }).success).toBe(true);
     expect(VerifiedReportSchema.safeParse({ ...report, coverage: [...reviewers, coverage] }).success)
       .toBe(false);
+  });
+});
+
+describe('finding probe contracts', () => {
+  const finding = {
+    id: '2f5b02de-54d7-4e45-9227-684754f40ee8', title: 'Null entry crashes mapper',
+    severity: 'high', filePath: 'src/mapper.ts', location: { startLine: 1 },
+    evidence: 'entry.value', impact: 'Mapping a null entry throws.',
+    suggestedFix: 'Guard null entries.', origins: [reviewer],
+  };
+  const probe: FindingProbe = { summary: 'Null input throws.', script: 'map([null])', output: 'TypeError: null' };
+
+  it('preserves probe evidence through reviewer results, verifier decisions and reports', () => {
+    expect(FindingProbeSchema.parse(probe)).toEqual(probe);
+    const withProbe = { ...finding, probe };
+    const decision = { candidateIds: [finding.id], verdict: 'accepted', rationale: 'Confirmed.', finding: withProbe };
+    expect(ReviewerResultSchema.parse({ ...result, findings: [withProbe] }).findings[0]?.probe).toEqual(probe);
+    expect(VerifierDecisionSchema.parse(decision).finding?.probe).toEqual(probe);
+    expect(VerifiedReportSchema.parse({ ...report, findings: [withProbe], decisions: [decision] }).findings[0]?.probe).toEqual(probe);
+  });
+
+  it.each([
+    { summary: '' }, { summary: undefined }, { script: undefined }, { output: undefined },
+    { script: '' }, { script: '   ' }, { output: '' }, { output: '   ' },
+    { extra: true }, { summary: 's'.repeat(301) }, { script: 's'.repeat(4001) }, { output: 'o'.repeat(2001) },
+  ])('rejects invalid probe %j', patch => {
+    expect(ReviewFindingSchema.safeParse({ ...finding, probe: { ...probe, ...patch } }).success).toBe(false);
+  });
+
+  it('trims probe fields and accepts their maximum lengths', () => {
+    expect(FindingProbeSchema.parse({ summary: ' Null input throws. ', script: ' map([null]) ', output: ' TypeError: null ' })).toEqual(probe);
+    expect(FindingProbeSchema.safeParse({ summary: 's'.repeat(300), script: 's'.repeat(4000), output: 'o'.repeat(2000) }).success).toBe(true);
+  });
+
+  it('still parses stored findings, reviewer results and reports without a probe', () => {
+    expect(ReviewFindingSchema.parse(finding)).toEqual(finding);
+    expect(ReviewerResultSchema.parse({ ...result, findings: [finding] }).findings).toEqual([finding]);
+    expect(VerifiedReportSchema.parse({ ...report, findings: [finding] }).findings).toEqual([finding]);
   });
 });

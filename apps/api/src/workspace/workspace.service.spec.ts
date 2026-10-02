@@ -12,6 +12,41 @@ import { GitProcessService } from './git-process.service.js';
 
 const gitPath = process.platform === 'win32' ? 'C:\\Program Files\\Git\\cmd\\git.exe' : '/usr/bin/git';
 describe('real isolated Git workspace', () => {
+  it('counts pinned text additions and deletions including excluded files, renames and binary paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-numstat-'));
+    const fixture = join(root, 'fixture'); await mkdir(fixture);
+    const git = (...args: string[]) => execFileSync(gitPath, args, { cwd: fixture, encoding: 'utf8', windowsHide: true });
+    try {
+      git('init'); git('config', 'core.autocrlf', 'false'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
+      await writeFile(join(fixture, 'edit.txt'), 'keep\nremove one\nremove two\n');
+      await writeFile(join(fixture, 'old.txt'), 'unchanged rename\n');
+      await writeFile(join(fixture, 'binary.bin'), Buffer.from([0, 1, 2]));
+      git('add', '.'); git('commit', '-m', 'base'); const base = git('rev-parse', 'HEAD').trim();
+      await writeFile(join(fixture, 'target-only.txt'), 'not a PR addition\n');
+      git('add', '.'); git('commit', '-m', 'target'); const targetCommit = git('rev-parse', 'HEAD').trim();
+      git('checkout', '--detach', base);
+      await writeFile(join(fixture, 'edit.txt'), 'keep\nreplacement\n');
+      await writeFile(join(fixture, 'added.txt'), 'first\nsecond\n');
+      // Tabs/newlines exercise NUL-delimited numstat path handling on POSIX.
+      const renamedPath = process.platform === 'win32' ? 'renamed file.txt' : 'renamed\tfile\n.txt';
+      git('mv', 'old.txt', renamedPath);
+      await writeFile(join(fixture, 'binary.bin'), Buffer.from([0, 3, 4, 5]));
+      await writeFile(join(fixture, 'package-lock.json'), '{}\n');
+      git('add', '.'); git('commit', '-m', 'source'); const sourceCommit = git('rev-parse', 'HEAD').trim();
+      const service = new WorkspaceService(join(root, 'workspaces'), gitPath, new SecretValuesService(new FakeSecretStore()), () => fixture);
+      const input = { reviewId: 'test', pullRequest: { ...pullRequest(), sourceCommit, targetCommit, changedFiles: 5, additions: null, deletions: null }, standards: null };
+      const prepared = await service.prepare(input, new AbortController().signal);
+      const summary = JSON.parse(await readFile(prepared.metadataPath, 'utf8')).pullRequest;
+      expect(summary).toMatchObject({ additions: 4, deletions: 2, changedFiles: 5, sourceCommit, targetCommit });
+      expect(prepared.pullRequest).toEqual(summary);
+      expect(input.pullRequest.additions).toBeNull();
+      expect(prepared.exclusions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'binary.bin', reason: 'Binary file' }),
+        expect.objectContaining({ path: 'package-lock.json' }),
+      ]));
+      await service.cleanup(prepared.workspaceId);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('deepens pinned divergent history and prepares only source changes with source context', async () => {
     const root = await mkdtemp(join(tmpdir(), 'workspace-divergence-'));
     const fixture = join(root, 'fixture'); await mkdir(fixture);

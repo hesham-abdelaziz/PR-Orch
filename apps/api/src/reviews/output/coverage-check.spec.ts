@@ -45,8 +45,8 @@ describe('coverageWarning', () => {
   it('names the reviewer, the count, and a bounded list of titles', () => {
     const warning = coverageWarning('gemini/pro', summarizeCoverage(areas, []), areas.length);
 
-    expect(warning).toMatch(/^Reviewer gemini\/pro did not report coverage for 11 of 11 review areas \(Intent and scope, /u);
-    expect(warning).toMatch(/and 3 more\); treat them as not reviewed/u);
+    expect(warning).toMatch(/^Reviewer gemini\/pro did not report coverage for 12 of 12 review areas \(Intent and scope, /u);
+    expect(warning).toMatch(/and 4 more\); treat them as not reviewed/u);
   });
 });
 
@@ -54,7 +54,7 @@ describe('coverageLogLine', () => {
   it('summarizes counts and ids without model text', () => {
     const line = coverageLogLine(summarizeCoverage(areas, [entry('tests', 'not_applicable'), entry('ignore me')]));
 
-    expect(line).toMatch(/^coverage: 0 checked, 1 not applicable, 10 missing/u);
+    expect(line).toMatch(/^coverage: 0 checked, 1 not applicable, 11 missing/u);
     expect(line).toContain('not_applicable=[tests]');
     expect(line).toContain('unknown=1');
     expect(line).not.toContain('ignore me');

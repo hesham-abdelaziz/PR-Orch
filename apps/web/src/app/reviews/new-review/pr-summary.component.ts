@@ -50,7 +50,7 @@ import { PullRequestSummary } from '@pr-orchestrator/contracts';
             <span class="metric-label">Scope</span>
             <span class="metric-value font-mono">{{ summary.changedFiles }} changed files</span>
           </div>
-          @if (hasLineCounts()) {
+          @if (hasLineCounts() && summary.additions !== null && summary.deletions !== null) {
             <div class="metric-card">
               <span class="metric-label">Additions</span>
               <span class="metric-value font-mono text-additions">+{{ summary.additions }}</span>
@@ -274,7 +274,11 @@ export class PrSummaryComponent {
 
   hasLineCounts(): boolean {
     if (!this.summary) return false;
-    return this.summary.additions > 0 || this.summary.deletions > 0;
+    return (
+      this.summary.additions !== null &&
+      this.summary.deletions !== null &&
+      (this.summary.additions > 0 || this.summary.deletions > 0)
+    );
   }
 
   getAuthorInitials(name: string): string {

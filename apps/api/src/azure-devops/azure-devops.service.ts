@@ -275,8 +275,10 @@ export class AzureDevOpsService {
         sourceCommit: source,
         targetCommit: target,
         changedFiles: files.size,
-        additions: 0,
-        deletions: 0,
+        // Azure iteration changes do not contain pinned merge-base line totals.
+        // Workspace preparation replaces these unknown values with Git numstat.
+        additions: null,
+        deletions: null,
         updatedAt: date(
           latest.updatedDate ?? latest.createdDate ?? metadata.creationDate,
         ),

@@ -13,6 +13,7 @@ const finding = {
   impact: 'Credential exposure.',
   suggestedFix: `Rotate ${S.github}.`,
   reference: null,
+  probe: null,
 };
 
 describe('redactModelOutput', () => {
@@ -38,7 +39,7 @@ describe('redactModelOutput', () => {
     const output = VerifierOutputSchema.parse({
       summary: `Found synthetic-known-value-9 and ${S.jwt}`,
       decisions: [
-        { candidateIds: ['00000000-0000-4000-8000-000000000001'], verdict: 'rejected', rationale: `false alarm, ${S.bearer}`, locationCorrection: null, finding: null },
+        { candidateIds: ['00000000-0000-4000-8000-000000000001'], verdict: 'rejected', rationale: `false alarm, ${S.bearer}`, locationCorrection: null, probeFromCandidate: null, finding: null },
       ],
       warnings: [`see ${S.urlCredential}`],
     });
@@ -68,5 +69,26 @@ describe('redactModelOutput', () => {
     });
 
     expect(redactModelOutput(output)).toEqual(output);
+  });
+});
+
+describe('redactModelOutput probes', () => {
+  it('redacts secrets inside a probe script and its output', () => {
+    const output = ReviewerOutputSchema.parse({
+      findings: [
+        {
+          ...finding,
+          probe: { summary: 'Leaks a key.', script: `node -e "console.log('${S.aws}')"`, output: S.aws },
+        },
+      ],
+      warnings: [],
+      exclusions: [],
+      coverage: [],
+    });
+
+    const text = JSON.stringify(redactModelOutput(output));
+
+    expect(text).not.toContain(S.aws);
+    expect(text).toContain('[REDACTED]');
   });
 });

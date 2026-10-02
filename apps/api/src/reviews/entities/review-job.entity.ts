@@ -53,6 +53,7 @@ export interface ReviewJobRecord {
 export type JobPatch = Partial<
   Pick<
     ReviewJobRecord,
+    | 'pullRequest'
     | 'warnings'
     | 'exclusions'
     | 'failureReason'

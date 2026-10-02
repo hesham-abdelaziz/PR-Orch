@@ -55,6 +55,8 @@ export interface WireFinding {
   impact: string;
   suggestedFix: string;
   reference: string | null;
+  /** Reviewer wire field; the verifier's finding has no `probe` (see `verifierJson`). */
+  probe: { summary: string; script: string; output: string } | null;
 }
 
 export function wireFinding(overrides: Partial<WireFinding> = {}): WireFinding {
@@ -67,6 +69,7 @@ export function wireFinding(overrides: Partial<WireFinding> = {}): WireFinding {
     impact: 'The loader throws for empty configuration.',
     suggestedFix: 'Guard config before reading value.',
     reference: null,
+    probe: null,
     ...overrides,
   };
 }
@@ -99,15 +102,29 @@ export type WireDecision = {
   verdict: 'accepted' | 'rejected' | 'merged';
   rationale: string;
   locationCorrection?: string | null;
+  /** Id of the decided candidate whose probe the finding keeps. */
+  probeFromCandidate?: string | null;
   finding: WireFinding | null;
 };
 
 export function verifierJson(decisions: WireDecision[], summary = 'Verified the reported claims.', warnings: string[] = []): string {
   return JSON.stringify({
     summary,
-    decisions: decisions.map((decision) => ({ ...decision, locationCorrection: decision.locationCorrection ?? null })),
+    decisions: decisions.map(({ finding, ...decision }) => ({
+      ...decision,
+      locationCorrection: decision.locationCorrection ?? null,
+      probeFromCandidate: decision.probeFromCandidate ?? null,
+      // The verifier names a candidate's probe by id; it never writes probe text.
+      finding: finding === null ? null : omitProbe(finding),
+    })),
     warnings,
   });
+}
+
+function omitProbe(finding: WireFinding): Omit<WireFinding, 'probe'> {
+  const { probe: _probe, ...rest } = finding;
+
+  return rest;
 }
 
 export function toWire(candidate: ReviewFinding): WireFinding {
@@ -124,6 +141,7 @@ export function toWire(candidate: ReviewFinding): WireFinding {
     impact: candidate.impact,
     suggestedFix: candidate.suggestedFix,
     reference: candidate.reference ?? null,
+    probe: candidate.probe ?? null,
   });
 }
 
@@ -142,6 +160,7 @@ export function acceptAll(prompt: string): string {
       candidateIds: [candidate.id],
       verdict: 'accepted' as const,
       rationale: 'Confirmed in the code.',
+      probeFromCandidate: candidate.probe ? candidate.id : null,
       finding: toWire(candidate),
     })),
   );
@@ -232,6 +251,8 @@ export class FakeWorkspace implements ReviewWorkspacePort {
   cleanupFailures = 0;
   exclusions: PreparedWorkspace['exclusions'] = [];
   warnings: string[] = [];
+  /** When set, `prepare` reports these measured diff totals on the pull request summary. */
+  measuredTotals: { additions: number | null; deletions: number | null } | null = null;
   /** Overrides for the prepared paths, e.g. a distinct or Windows-style layout. */
   paths: Partial<
     Pick<PreparedWorkspace, 'rootPath' | 'checkoutPath' | 'diffPath' | 'metadataPath' | 'technologyManifestPath'>
@@ -260,6 +281,7 @@ export class FakeWorkspace implements ReviewWorkspacePort {
       standardsPath: input.standards?.storagePath ?? null,
       exclusions: this.exclusions,
       warnings: this.warnings,
+      ...(this.measuredTotals ? { pullRequest: { ...input.pullRequest, ...this.measuredTotals } } : {}),
       ...this.paths,
     };
   }

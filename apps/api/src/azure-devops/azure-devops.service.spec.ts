@@ -112,8 +112,8 @@ describe('Azure read-only client', () => {
       changedFiles: 1,
       sourceCommit: source,
       targetCommit: target,
-      additions: 0,
-      deletions: 0,
+      additions: null,
+      deletions: null,
     });
     expect(cli).not.toHaveBeenCalled();
     expect(

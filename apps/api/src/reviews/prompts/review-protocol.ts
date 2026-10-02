@@ -20,6 +20,7 @@ export const PROTOCOL_AREAS: readonly ReviewArea[] = Object.freeze(
     [
       ['intent', 'Intent and scope', 'Does the change do what the pull request title, description and linked work item ask, completely and nothing more? Flag missing pieces and unrelated changes bundled in.'],
       ['correctness', 'Correctness', 'Logic errors, wrong conditions, off-by-one and boundary cases, null/empty/single-element inputs, state transitions, data transformations, and behavior that differs from what the code and names promise.'],
+      ['untrusted-input', 'Untrusted input shapes', 'Every new or changed mapper, parser, normalizer or util that receives CMS, API or user data: enumerate the malformed shapes (null entries, a single object where an array is expected and the reverse, empty values, whitespace-only strings, missing optional fields, mixed languages or encodings) and check each one against the code, including whether it throws outside the surrounding error handling or silently produces wrong output. Where you are allowed to run the code, probe it with those inputs.'],
       ['error-handling', 'Error handling and failure paths', 'Exceptions, rejected promises, failed requests, partial failure, retries, timeouts, cleanup on error, and how failures surface to callers or users.'],
       ['security', 'Security', 'Input validation, injection (SQL, command, path, HTML, URL), authentication and authorization, secrets in code, config or logs, unsafe deserialization, and untrusted data reaching sensitive sinks.'],
       ['contracts', 'Interfaces, data and compatibility', 'Public API, schema, DTO, event, configuration and database changes: backward compatibility, all callers and consumers updated, migrations, and serialization.'],
@@ -86,9 +87,10 @@ export function reviewAreas(sectionTitles: readonly string[] = []): ReviewArea[]
 /** How a project's requirement levels map onto the engine's severities. */
 export const SEVERITY_GUIDE = [
   'critical: exploitable security flaw, data loss or corruption, or a crash or outage on a main path.',
-  'high: incorrect behavior users or callers will hit, a broken contract, or a violation of a blocking project rule (MUST / MUST NOT / required).',
-  'medium: a real defect on a narrower path, missing coverage of risky behavior, or a violation of an expected project rule (SHOULD / SHOULD NOT / recommended).',
-  'low: a minor or judgement-call issue, including CONSIDER / MAY / optional project guidance.',
+  'high: incorrect behavior users or callers will hit, an unhandled exception or crash on reachable input, wrong data or a wrong destination reaching users, a broken contract, or a violation of a blocking project rule (MUST / MUST NOT / required).',
+  'medium: a real defect on a narrower path, missing coverage of risky behavior, or a violation of an expected project rule (SHOULD / SHOULD NOT / recommended) with limited impact.',
+  'low: a minor or judgement-call issue with no user-visible or data impact, including CONSIDER / MAY / optional project guidance.',
+  'Calibrate severity by runtime impact (crash, wrong data, wrong destination, broken accessibility), not by whether the matching project rule says MUST or SHOULD: a SHOULD rule whose violation crashes or misroutes is not low.',
   'When a finding violates a project standard, name the standards file and section (for example "standards.md §3.6") in `reference`.',
 ];
 

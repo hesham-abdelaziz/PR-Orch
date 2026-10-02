@@ -1,4 +1,4 @@
-import { Component, Input } from '@angular/core';
+import { Component, Input, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ReviewFinding } from '@pr-orchestrator/contracts';
 
@@ -14,6 +14,9 @@ import { ReviewFinding } from '@pr-orchestrator/contracts';
           <span class="badge-severity font-mono" [class]="'sev-' + finding.severity">
             {{ finding.severity | uppercase }}
           </span>
+          @if (finding.probe) {
+            <span class="badge-reproduced font-mono">Reproduced</span>
+          }
           <h3 class="finding-title">{{ finding.title }}</h3>
         </div>
 
@@ -72,6 +75,54 @@ import { ReviewFinding } from '@pr-orchestrator/contracts';
           </div>
         </div>
       }
+
+      <!-- Expandable Probe Section -->
+      @if (finding.probe) {
+        <div class="probe-section">
+          <button
+            type="button"
+            class="probe-toggle-btn font-mono"
+            [attr.aria-expanded]="probeExpanded()"
+            [attr.aria-controls]="'probe-details-' + finding.id"
+            (click)="toggleProbe()"
+          >
+            <span class="toggle-icon" aria-hidden="true">{{ probeExpanded() ? '▼' : '▶' }}</span>
+            <span class="toggle-text">Probe</span>
+          </button>
+
+          @if (probeExpanded()) {
+            <div
+              [id]="'probe-details-' + finding.id"
+              class="probe-details"
+            >
+              <div class="probe-summary-row">
+                <span class="detail-label font-mono">SUMMARY:</span>
+                <p class="probe-summary-text">{{ finding.probe.summary }}</p>
+              </div>
+
+              <div class="probe-block">
+                <span class="detail-label font-mono" [id]="'probe-script-label-' + finding.id">Probe script</span>
+                <pre
+                  class="probe-code-block font-mono"
+                  tabindex="0"
+                  aria-label="Probe script"
+                  [attr.aria-labelledby]="'probe-script-label-' + finding.id"
+                >{{ finding.probe.script }}</pre>
+              </div>
+
+              <div class="probe-block">
+                <span class="detail-label font-mono" [id]="'probe-output-label-' + finding.id">Probe output</span>
+                <pre
+                  class="probe-code-block font-mono"
+                  tabindex="0"
+                  aria-label="Probe output"
+                  [attr.aria-labelledby]="'probe-output-label-' + finding.id"
+                >{{ finding.probe.output }}</pre>
+              </div>
+            </div>
+          }
+        </div>
+      }
     </article>
   `,
   styles: [`
@@ -101,6 +152,7 @@ import { ReviewFinding } from '@pr-orchestrator/contracts';
       gap: 10px;
       flex: 1;
       min-width: 0;
+      flex-wrap: wrap;
     }
 
     .badge-severity {
@@ -113,6 +165,16 @@ import { ReviewFinding } from '@pr-orchestrator/contracts';
       &.sev-high { background: rgba(249, 115, 22, 0.15); color: $severity-high; border: 1px solid rgba(249, 115, 22, 0.4); }
       &.sev-medium { background: rgba(245, 158, 11, 0.15); color: $severity-medium; border: 1px solid rgba(245, 158, 11, 0.4); }
       &.sev-low { background: rgba(56, 189, 248, 0.15); color: $accent-primary; border: 1px solid rgba(56, 189, 248, 0.4); }
+    }
+
+    .badge-reproduced {
+      @include mono-badge;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      background: $accent-verifier-bg;
+      color: $accent-verifier;
+      border: 1px solid rgba(163, 113, 247, 0.4);
     }
 
     .finding-title {
@@ -175,9 +237,101 @@ import { ReviewFinding } from '@pr-orchestrator/contracts';
       .reference-tag { font-size: 11px; color: $accent-primary; }
     }
 
+    /* Expandable Probe Section */
+    .probe-section {
+      border: 1px solid rgba(163, 113, 247, 0.3);
+      border-radius: 6px;
+      background: rgba(163, 113, 247, 0.04);
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .probe-toggle-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: rgba(163, 113, 247, 0.08);
+      border: none;
+      color: $accent-verifier;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+      transition: background-color 0.15s ease;
+
+      &:hover {
+        background: rgba(163, 113, 247, 0.15);
+      }
+
+      &:focus-visible {
+        outline: 2px solid $accent-primary;
+        outline-offset: -2px;
+      }
+    }
+
+    .toggle-icon {
+      font-size: 9px;
+      transition: transform 0.15s ease;
+    }
+
+    .probe-details {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border-top: 1px solid rgba(163, 113, 247, 0.2);
+    }
+
+    .probe-summary-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .probe-summary-text {
+      font-size: 12px;
+      color: $text-primary;
+      margin: 0;
+      line-height: 1.4;
+    }
+
+    .probe-block {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .probe-code-block {
+      background: $bg-surface-1;
+      border: 1px solid $border-subtle;
+      border-radius: 4px;
+      padding: 10px 12px;
+      font-family: $font-mono;
+      font-size: 11px;
+      line-height: 1.5;
+      color: $text-primary;
+      margin: 0;
+      overflow-x: auto;
+      max-width: 100%;
+      box-sizing: border-box;
+      white-space: pre;
+
+      &:focus-visible {
+        outline: 1px solid $accent-primary;
+      }
+    }
+
     .font-mono { font-family: $font-mono; }
   `],
 })
 export class FindingCardComponent {
   @Input({ required: true }) finding!: ReviewFinding;
+
+  readonly probeExpanded = signal(false);
+
+  toggleProbe(): void {
+    this.probeExpanded.update((v) => !v);
+  }
 }

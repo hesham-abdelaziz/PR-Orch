@@ -337,3 +337,53 @@ describe('assertCommandPolicy', () => {
     });
   });
 });
+
+describe('runtime probes do not widen any provider profile', () => {
+  const prompt = 'Review the pull request thoroughly and report every defect.';
+  const codexArgs = buildCodexReviewArgs({ model: 'm', schemaPath: '/s.json', workspacePath: '/w', stream: true });
+
+  it('keeps the Codex argv read-only, approval-free, ephemeral and without write grants', () => {
+    expect(codexArgs).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'read-only',
+      '--ephemeral',
+      '--skip-git-repo-check',
+      '--color',
+      'never',
+      '--json',
+      '--output-schema',
+      '/s.json',
+      '--cd',
+      '/w',
+      '--model',
+      'm',
+      '-',
+    ]);
+    expect(codexArgs).not.toContain('--add-dir');
+    expect(codexArgs.some((argument) => argument.startsWith('--dangerously'))).toBe(false);
+  });
+
+  it.each([
+    ['--add-dir', '/outside'],
+    ['--sandbox', 'workspace-write'],
+    ['--ask-for-approval', 'on-request'],
+    ['-c', 'sandbox_mode="workspace-write"'],
+    ['-c', 'sandbox_workspace_write.network_access=true'],
+    ['--dangerously-bypass-approvals-and-sandbox'],
+  ])('still rejects the Codex option %j', (...extra) => {
+    expect(() => assertCommandPolicy('codex', [...codexArgs, ...extra], prompt)).toThrow(/policy/i);
+  });
+
+  it('keeps Claude on Read, Grep and Glob and Gemini in plan mode, with no shell or write tools', () => {
+    const claude = buildClaudeReviewArgs({ model: 'opus', schemaJson: SCHEMA });
+    expect(claude[claude.indexOf('--tools') + 1]).toBe('Read,Grep,Glob');
+    expect(claude[claude.indexOf('--disallowedTools') + 1]).toContain('Bash');
+    expect(claude[claude.indexOf('--permission-mode') + 1]).toBe('plan');
+
+    const gemini = buildGeminiReviewArgs({ model: 'pro', sandbox: false });
+    expect(gemini.slice(0, 2)).toEqual(['--approval-mode', 'plan']);
+  });
+});

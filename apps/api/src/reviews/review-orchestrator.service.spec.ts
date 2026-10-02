@@ -184,7 +184,7 @@ describe('ReviewOrchestratorService — review protocol coverage', () => {
 
     expect(record.warnings.some((warning) => /did not report coverage/u.test(warning))).toBe(false);
     const codexRun = runs.find((run) => run.selection.provider === 'codex');
-    expect(codexRun?.sanitizedLog).toMatch(/coverage: 10 checked, 0 not applicable, 0 missing/u);
+    expect(codexRun?.sanitizedLog).toMatch(/coverage: 11 checked, 0 not applicable, 0 missing/u);
   });
 
   it('discloses uncovered areas as a job warning and in the report, without a correction attempt', async () => {
@@ -203,9 +203,9 @@ describe('ReviewOrchestratorService — review protocol coverage', () => {
     expect(h.providers.adapters.codex.calls).toHaveLength(1);
     expect(runs.find((run) => run.selection.provider === 'codex')?.state).toBe('completed');
     const warning = record.warnings.find((text) => /did not report coverage/u.test(text));
-    expect(warning).toMatch(/^Reviewer codex\/[^ ]+ did not report coverage for 2 of 10 review areas \(Security, Tests\)/u);
+    expect(warning).toMatch(/^Reviewer codex\/[^ ]+ did not report coverage for 2 of 11 review areas \(Security, Tests\)/u);
     expect(record.warnings.filter((text) => /did not report coverage/u.test(text))).toHaveLength(1);
-    expect((await h.repository.getReport(id))?.markdown).toContain('did not report coverage for 2 of 10');
+    expect((await h.repository.getReport(id))?.markdown).toContain('did not report coverage for 2 of 11');
   });
 
   it('adds each standards section as a required area', async () => {
@@ -221,7 +221,7 @@ describe('ReviewOrchestratorService — review protocol coverage', () => {
     expect(prompt).toContain('{"area":"standards-1","section":"1. Routing"}');
     expect(prompt).toContain('{"area":"standards-2","section":"2. Security"}');
     // fullCoverage() only covers the fixed areas, so both reviewers miss the two sections.
-    const gaps = record.warnings.filter((text) => /did not report coverage for 2 of 12 review areas \(1\. Routing, 2\. Security\)/u.test(text));
+    const gaps = record.warnings.filter((text) => /did not report coverage for 2 of 13 review areas \(1\. Routing, 2\. Security\)/u.test(text));
     expect(gaps).toHaveLength(2);
   });
 
@@ -1283,5 +1283,55 @@ describe('ReviewOrchestratorService — reasoning effort', () => {
     for (const adapter of Object.values(h.providers.adapters)) {
       expect(adapter.calls.every((call) => !('reasoningEffort' in call))).toBe(true);
     }
+  });
+});
+
+describe('ReviewOrchestratorService — runtime probes and measured diff totals', () => {
+  const probe = {
+    summary: 'A null page_sections entry throws in the predicate.',
+    script: 'node -e "[null].some(s => s.id)"',
+    output: "TypeError: Cannot read properties of null (reading 'id')",
+  };
+
+  it('gives probe rules to the Codex reviewer only and carries its probe through verification into the report', async () => {
+    const h = await harness({
+      scripts: {
+        codex: (request) => completed('codex', request, reviewerJson([wireFinding({ title: 'Null entry crashes the mapper', probe })])),
+        gemini: (request) => completed('gemini', request, reviewerJson([wireFinding({ title: 'Gemini finding about the parser', filePath: 'src/parser.ts' })])),
+        claude: verifierAcceptAll,
+      },
+    });
+
+    const { id, record } = await runToEnd(h);
+
+    expect(record.state).toBe('completed');
+    expect(h.providers.adapters.codex.calls[0]?.prompt).toContain('`node -e`');
+    expect(h.providers.adapters.gemini.calls[0]?.prompt).not.toContain('`node -e`');
+    expect(h.providers.adapters.claude.calls[0]?.prompt).not.toContain('`node -e`');
+    const report = await h.repository.getReport(id);
+    expect(report?.report.findings.find((f) => f.title === 'Null entry crashes the mapper')?.probe).toEqual(probe);
+    expect(report?.report.findings.find((f) => f.title === 'Gemini finding about the parser')).not.toHaveProperty('probe');
+    expect(report?.markdown).toContain('**Reproduced**');
+    expect(report?.markdown).toMatch(/Runtime probes were allowed for codex\//u);
+    expect((await h.repository.listCandidates(id)).some((candidate) => candidate.finding.probe !== undefined)).toBe(true);
+  });
+
+  it('stores the measured diff totals from workspace preparation and renders them', async () => {
+    const h = await harness(twoReviewers());
+    h.workspace.measuredTotals = { additions: 4, deletions: 2 };
+
+    const { id, record } = await runToEnd(h);
+
+    expect(record.pullRequest).toMatchObject({ additions: 4, deletions: 2 });
+    expect((await h.repository.getReport(id))?.markdown).toContain('+4 / -2');
+  });
+
+  it('omits unknown totals from the report instead of printing zeros', async () => {
+    const h = await harness(twoReviewers());
+    h.workspace.measuredTotals = { additions: null, deletions: null };
+
+    const { id } = await runToEnd(h);
+
+    expect((await h.repository.getReport(id))?.markdown).not.toMatch(/\+\d+ \/ -\d+/u);
   });
 });

@@ -145,3 +145,28 @@ describe('VerifierPromptBuilder', () => {
     expect(prompt).toContain('"candidateIds"');
   });
 });
+
+describe('verifier calibration and probe handling', () => {
+  it('calibrates severity by runtime impact, not by MUST versus SHOULD', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toMatch(/Calibrate severity by runtime impact/u);
+    expect(prompt).toMatch(/even when the project rule it violates is only SHOULD/u);
+    expect(prompt).toMatch(/a SHOULD rule whose violation crashes or misroutes is not low/u);
+  });
+
+  it('does not let a single reporter sink a finding', () => {
+    expect(builder.build(input())).toMatch(/Do not reject or downgrade a finding because only one reviewer reported it/u);
+  });
+
+  it('treats a probe that follows from the code as verified and forbids re-typing it', () => {
+    const prompt = builder.build(input());
+
+    expect(prompt).toMatch(/You cannot re-run it/u);
+    expect(prompt).toMatch(/output follows from the cited code by reading it as verified evidence/u);
+    expect(prompt).toMatch(/only when you can show, from the code, that the script would print something different/u);
+    expect(prompt).toMatch(/Set `probeFromCandidate`/u);
+    expect(prompt).toContain('"probeFromCandidate"');
+    expect(prompt).not.toMatch(/"probe":\{/u);
+  });
+});

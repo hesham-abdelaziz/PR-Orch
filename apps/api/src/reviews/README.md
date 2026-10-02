@@ -1,9 +1,15 @@
 # Review engine (`apps/api/src/reviews`, `apps/api/src/reports`)
 
 Coordinates one pull-request review from creation to a terminal state and
-produces the canonical, immutable report. All reviews are **static code
-inspection**: nothing here writes to Azure DevOps, modifies the inspected
-repository, or receives an Azure PAT.
+produces the canonical, immutable report. Reviews are **static code
+inspection**, with one exception: Codex reviewers may also run small in-memory
+probes of the pull request's own pure code inside `--sandbox read-only`
+(verified on Windows in `docs/windows-engine-verification.md`; no writes, no
+network, no tests/builds/package managers). Claude and Gemini reviewers and the
+verifier stay static; a finding's `probe` is extra evidence, and the verifier
+keeps it by naming a candidate id (`probeFromCandidate`), never by re-typing it.
+Nothing here writes to Azure DevOps, modifies the inspected repository, or
+receives an Azure PAT.
 
 ## Pipeline
 

@@ -8,7 +8,8 @@ import type {
   VerifierDecision,
 } from '@pr-orchestrator/contracts';
 
-import { codeSpan, sanitizeBlock, sanitizeInline } from './markdown-safety.js';
+import { canProbe } from '../reviews/prompts/core-review-policy.js';
+import { codeBlock, codeSpan, sanitizeBlock, sanitizeInline } from './markdown-safety.js';
 
 export interface RenderReportInput {
   readonly job: ReviewJob;
@@ -53,7 +54,9 @@ export class ReportRenderer {
     lines.push(`# Pull request review: ${sanitizeInline(job.pullRequest.title)}`, '');
     lines.push(`Overall risk: ${report.overallRisk}`, '');
     lines.push(
-      'This report is the result of a static code inspection: reviewers read the pull request diff and repository files and did not build, test or run the code. It lists what was found in the files inspected; it does not certify the absence of other defects. See Coverage for exclusions.',
+      probeReviewers(job).length > 0
+        ? 'This report is the result of a code inspection: reviewers read the pull request diff and repository files and did not build or test the code. Some reviewers also ran small in-memory probes of the code under review in a read-only sandbox (see Models and Warnings); findings with a probe show a Reproduced block. It lists what was found in the files inspected; it does not certify the absence of other defects. See Coverage for exclusions.'
+        : 'This report is the result of a static code inspection: reviewers read the pull request diff and repository files and did not build, test or run the code. It lists what was found in the files inspected; it does not certify the absence of other defects. See Coverage for exclusions.',
       '',
     );
 
@@ -82,7 +85,7 @@ export class ReportRenderer {
       `- Author: ${sanitizeInline(pr.author.displayName)}`,
       `- Source: ${codeSpan(pr.sourceBranch)} at ${codeSpan(pr.sourceCommit.slice(0, 12))}`,
       `- Target: ${codeSpan(pr.targetBranch)} at ${codeSpan(pr.targetCommit.slice(0, 12))}`,
-      `- Changes: ${pr.changedFiles} files, +${pr.additions} / -${pr.deletions}`,
+      `- Changes: ${pr.changedFiles} files${pr.additions === null || pr.deletions === null ? '' : `, +${pr.additions} / -${pr.deletions}`}`,
       `- Review started: ${sanitizeInline(job.createdAt)}`,
       `- Review duration: ${formatDuration(durationMs)}`,
       '',
@@ -95,10 +98,11 @@ export class ReportRenderer {
     for (const reviewer of job.reviewers) {
       const state = RUN_STATE_LABEL[reviewer.state] ?? reviewer.state;
       const note = reviewer.warning ? ` (${sanitizeInline(reviewer.warning)})` : '';
-      lines.push(`- Reviewer ${withEffort(reviewer.selection)}: ${state}${note}`);
+      const mode = canProbe(reviewer.selection.provider) ? 'static inspection plus runtime probes' : 'static inspection only';
+      lines.push(`- Reviewer ${withEffort(reviewer.selection)}: ${state} — ${mode}${note}`);
     }
 
-    lines.push('');
+    lines.push('- Main verifier: static inspection only; it cannot re-run probes', '');
   }
 
   private guidance(lines: string[], job: ReviewJob): void {
@@ -124,7 +128,18 @@ export class ReportRenderer {
   }
 
   private warnings(lines: string[], job: ReviewJob, report: VerifiedReport): void {
-    const unique = [...new Set([...job.warnings, ...report.warnings])];
+    const probing = probeReviewers(job);
+    const unique = [
+      ...new Set([
+        ...(probing.length > 0
+          ? [
+              `Runtime probes were allowed for ${probing.join(', ')}: in-memory evaluation of the pull request's own code inside a read-only sandbox (no writes, no network, no tests, builds or package managers). Other reviewers and the verifier inspected statically.`,
+            ]
+          : []),
+        ...job.warnings,
+        ...report.warnings,
+      ]),
+    ];
     if (unique.length === 0) return;
 
     lines.push('## Warnings', '', ...unique.map((warning) => `- ${sanitizeInline(warning)}`), '');
@@ -198,6 +213,23 @@ export class ReportRenderer {
         sanitizeBlock(finding.suggestedFix),
         '',
       );
+
+      if (finding.probe) {
+        lines.push(
+          '**Reproduced**',
+          '',
+          sanitizeBlock(finding.probe.summary),
+          '',
+          'Script:',
+          '',
+          ...codeBlock(finding.probe.script, 'js'),
+          '',
+          'Output:',
+          '',
+          ...codeBlock(finding.probe.output, ''),
+          '',
+        );
+      }
     });
   }
 
@@ -259,6 +291,13 @@ export class ReportRenderer {
       '',
     );
   }
+}
+
+/** Display labels of the job's reviewers that were allowed to run runtime probes. */
+function probeReviewers(job: ReviewJob): string[] {
+  return job.reviewers
+    .filter((reviewer) => canProbe(reviewer.selection.provider))
+    .map((reviewer) => label(reviewer.selection));
 }
 
 function totalClaims(decisions: readonly VerifierDecision[]): number {

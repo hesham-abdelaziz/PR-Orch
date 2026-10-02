@@ -17,7 +17,7 @@ const columns = {
   cleanupPending: 'cleanup_pending', overallRisk: 'overall_risk', findingCount: 'finding_count', createdAt: 'created_at', updatedAt: 'updated_at', completedAt: 'completed_at',
 } satisfies Record<keyof ReviewJobRecord, string>;
 const jsonKeys = new Set(['pullRequest', 'main', 'reviewers', 'standards', 'settings', 'warnings', 'exclusions']);
-const patchKeys = ['warnings', 'exclusions', 'failureReason', 'workspaceId', 'cleanupPending', 'overallRisk', 'findingCount'] as const;
+const patchKeys = ['pullRequest', 'warnings', 'exclusions', 'failureReason', 'workspaceId', 'cleanupPending', 'overallRisk', 'findingCount'] as const;
 const encode = (key: string, value: unknown): unknown => value === null || value === undefined ? null : jsonKeys.has(key) ? JSON.stringify(value) : key === 'cleanupPending' ? Number(value) : value;
 function decode(row: Row | undefined): ReviewJobRecord | null {
   if (!row) return null;

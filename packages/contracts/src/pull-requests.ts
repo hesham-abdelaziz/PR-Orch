@@ -18,8 +18,9 @@ export const PullRequestSummarySchema = z.strictObject({
   sourceCommit: z.string().regex(/^[a-fA-F0-9]{7,64}$/),
   targetCommit: z.string().regex(/^[a-fA-F0-9]{7,64}$/),
   changedFiles: z.number().int().nonnegative(),
-  additions: z.number().int().nonnegative(),
-  deletions: z.number().int().nonnegative(),
+  /** Null until the pinned merge-base-to-source diff is available. */
+  additions: z.number().int().nonnegative().nullable(),
+  deletions: z.number().int().nonnegative().nullable(),
   updatedAt: z.string().datetime(),
 });
 
