@@ -8,6 +8,7 @@ import { MainModelSelectorComponent } from './main-model-selector.component';
 import { ReviewerSelectorComponent } from './reviewer-selector.component';
 import { StandardsStatusComponent } from './standards-status.component';
 import { AdditionalInstructionsComponent } from './additional-instructions.component';
+import { RepositoryGuidanceFieldComponent } from './repository-guidance-field.component';
 import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
 
 @Component({
@@ -22,6 +23,7 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
     ReviewerSelectorComponent,
     StandardsStatusComponent,
     AdditionalInstructionsComponent,
+    RepositoryGuidanceFieldComponent,
   ],
   template: `
     <div class="new-review-page">
@@ -102,6 +104,16 @@ import { ProviderQuotasStore } from '../../providers/provider-quotas.store';
           <app-additional-instructions
             [instructions]="store.additionalInstructions()"
             (instructionsChange)="store.setAdditionalInstructions($event)"
+          />
+
+          <!-- Step 5: Optional Repository Guidance -->
+          <app-repository-guidance-field
+            [guidance]="store.repositoryGuidance()"
+            [fileSize]="store.guidanceSize()"
+            [reading]="store.readingGuidance()"
+            [error]="store.guidanceError()"
+            (fileSelected)="store.setGuidanceFile($event)"
+            (remove)="store.clearGuidance()"
           />
         </div>
 

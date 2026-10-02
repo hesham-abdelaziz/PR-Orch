@@ -5,6 +5,9 @@ import {
   ModelSelection,
   PullRequestSummary,
   PullRequestSummarySchema,
+  REPOSITORY_GUIDANCE_MAX_BYTES,
+  RepositoryGuidance,
+  RepositoryGuidanceSchema,
   ReviewJob,
   ReviewJobSchema,
   Settings,
@@ -33,6 +36,11 @@ export class NewReviewStore {
   readonly reviewerSelections = signal<ModelSelection[]>([]);
   readonly additionalInstructions = signal<string>('');
 
+  readonly repositoryGuidance = signal<RepositoryGuidance | null>(null);
+  readonly guidanceFile = signal<{ name: string; size: number } | null>(null);
+  readonly readingGuidance = signal<boolean>(false);
+  readonly guidanceError = signal<string | null>(null);
+
   readonly standards = signal<StandardsMetadata | null>(null);
   readonly loadingStandards = signal<boolean>(false);
 
@@ -44,6 +52,12 @@ export class NewReviewStore {
   readonly activeReviewConflictId = signal<string | null>(null);
 
   readonly missingStandards = computed(() => !this.standards());
+  readonly guidanceSize = computed(() => {
+    const file = this.guidanceFile();
+    if (file) return file.size;
+    const g = this.repositoryGuidance();
+    return g ? new TextEncoder().encode(g.content).byteLength : 0;
+  });
 
   readonly hasDuplicateReviewers = computed(() => {
     const seen = new Set<string>();
@@ -65,7 +79,8 @@ export class NewReviewStore {
   });
 
   readonly canSubmit = computed(() => {
-    if (this.submitting() || this.validatingPr()) return false;
+    if (this.submitting() || this.validatingPr() || this.readingGuidance()) return false;
+    if (this.guidanceError()) return false;
     if (this.activeJob()) return false;
     if (!this.prSummary()) return false;
     if (!this.mainSelection()) return false;
@@ -173,6 +188,70 @@ export class NewReviewStore {
     this.additionalInstructions.set(instructions);
   }
 
+  async setGuidanceFile(file: File | null): Promise<void> {
+    if (!file) {
+      this.clearGuidance();
+      return;
+    }
+
+    this.readingGuidance.set(true);
+    this.guidanceError.set(null);
+    this.repositoryGuidance.set(null);
+    this.guidanceFile.set({ name: file.name, size: file.size });
+
+    try {
+      if (!/\.(md|txt)$/i.test(file.name)) {
+        this.guidanceError.set('Guidance must be a .md or .txt file');
+        return;
+      }
+
+      if (file.size > REPOSITORY_GUIDANCE_MAX_BYTES) {
+        this.guidanceError.set('Guidance exceeds 64 KiB of UTF-8');
+        return;
+      }
+
+      const buffer = await file.arrayBuffer();
+      if (buffer.byteLength > REPOSITORY_GUIDANCE_MAX_BYTES) {
+        this.guidanceError.set('Guidance exceeds 64 KiB of UTF-8');
+        return;
+      }
+
+      let content: string;
+      try {
+        const decoder = new TextDecoder('utf-8', { fatal: true });
+        content = decoder.decode(buffer);
+      } catch {
+        this.guidanceError.set('File is not valid UTF-8');
+        return;
+      }
+
+      const parsed = RepositoryGuidanceSchema.safeParse({
+        filename: file.name,
+        content,
+      });
+
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0];
+        this.guidanceError.set(firstIssue?.message || 'Invalid repository guidance file');
+        return;
+      }
+
+      this.repositoryGuidance.set(parsed.data);
+      this.guidanceError.set(null);
+    } catch (err: unknown) {
+      this.guidanceError.set(err instanceof Error ? err.message : 'Failed to read guidance file');
+    } finally {
+      this.readingGuidance.set(false);
+    }
+  }
+
+  clearGuidance(): void {
+    this.repositoryGuidance.set(null);
+    this.guidanceFile.set(null);
+    this.guidanceError.set(null);
+    this.readingGuidance.set(false);
+  }
+
   async loadInitialData(): Promise<void> {
     await this.providersStore.load().catch(() => {});
 
@@ -258,11 +337,13 @@ export class NewReviewStore {
     this.submitError.set(null);
     this.activeReviewConflictId.set(null);
 
+    const guidance = this.repositoryGuidance();
     const payload: CreateReviewRequest = {
       pullRequestUrl: this.prUrl().trim(),
       main: this.mainSelection()!,
       reviewers: this.reviewerSelections(),
       additionalInstructions: this.additionalInstructions().trim() || undefined,
+      ...(guidance ? { repositoryGuidance: guidance } : {}),
     };
 
     try {
@@ -275,6 +356,7 @@ export class NewReviewStore {
         schema: ReviewJobSchema,
       });
 
+      this.clearGuidance();
       return job;
     } catch (err: unknown) {
       if (err instanceof ApiError) {

@@ -1223,5 +1223,45 @@ describe('ReportPageComponent', () => {
     const reproducedTally = el.querySelector('.tally-reproduced .tally-num');
     expect(reproducedTally?.textContent?.trim()).toBe('0');
   });
+
+  it('renders repository guidance metadata in report when attached', async () => {
+    const jobWithGuidance: ReviewJob = {
+      ...mockJob,
+      repositoryGuidance: {
+        filename: 'AGENTS.md',
+        sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+        sizeBytes: 2048,
+      },
+    };
+
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes(`/api/reviews/${reviewId}/report`)) {
+        return Promise.resolve(new Response(JSON.stringify(mockReport), { status: 200 }));
+      }
+      if (url.includes(`/api/reviews/${reviewId}`)) {
+        return Promise.resolve(new Response(JSON.stringify(jobWithGuidance), { status: 200 }));
+      }
+      return Promise.reject(new Error(`Unhandled fetch: ${url}`));
+    });
+
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const guidanceItem = el.querySelector('#meta-guidance');
+    expect(guidanceItem).toBeTruthy();
+    expect(guidanceItem?.textContent).toContain('AGENTS.md');
+    expect(guidanceItem?.textContent).toContain('9f86d081');
+    expect(guidanceItem?.textContent).toContain('2.0 KB');
+  });
+
+  it('renders historical report without repository guidance normally', async () => {
+    await component.loadReportData();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('#meta-guidance')).toBeNull();
+  });
 });
 

@@ -281,4 +281,139 @@ describe('NewReviewStore', () => {
     expect(store.reviewerSelections()[0].reasoningEffort).toBe('high');
     expect(store.reviewerSelections()[1].reasoningEffort).toBe('medium');
   });
+
+  describe('repository guidance', () => {
+    beforeEach(() => {
+      store.setPrUrl('https://dev.azure.com/acme/project/_git/repo/pullrequest/123');
+      store.prSummary.set(mockPrSummary);
+      store.setMainSelection({ provider: 'claude', model: 'claude-3-7-sonnet' });
+      store.setReviewerSelections([{ provider: 'codex', model: 'gpt-4o' }]);
+    });
+
+    it('accepts valid mixed-case Markdown (.md and .txt)', async () => {
+      const validFiles = [
+        new File(['# Claude Conventions\nAlways run tests.'], 'Claude.md', { type: 'text/markdown' }),
+        new File(['# AGENTS Conventions\nStrict typing.'], 'AGENTS.MD', { type: 'text/markdown' }),
+        new File(['# Gemini Conventions\nOptimize tokens.'], 'GEMINI.md', { type: 'text/markdown' }),
+        new File(['General repository instructions.'], 'guidance.TXT', { type: 'text/plain' }),
+      ];
+
+      for (const file of validFiles) {
+        await store.setGuidanceFile(file);
+        expect(store.guidanceError()).toBeNull();
+        expect(store.repositoryGuidance()).toEqual({
+          filename: file.name,
+          content: expect.any(String),
+        });
+        expect(store.canSubmit()).toBe(true);
+      }
+    });
+
+    it('rejects invalid file types', async () => {
+      const invalidFile = new File(['{"rules": []}'], 'guidance.json', { type: 'application/json' });
+      await store.setGuidanceFile(invalidFile);
+      expect(store.guidanceError()).toBe('Guidance must be a .md or .txt file');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('rejects files exceeding 64 KiB limit', async () => {
+      const oversizedContent = 'a'.repeat(64 * 1024 + 1);
+      const oversizedFile = new File([oversizedContent], 'large.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(oversizedFile);
+      expect(store.guidanceError()).toBe('Guidance exceeds 64 KiB of UTF-8');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('rejects empty or whitespace-only content', async () => {
+      const emptyFile = new File(['   \n\t  '], 'empty.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(emptyFile);
+      expect(store.guidanceError()).toBe('Guidance content must not be empty');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('rejects invalid UTF-8 bytes strictly', async () => {
+      const invalidBytes = new Uint8Array([0xff, 0xfe, 0x80]);
+      const invalidUtf8File = new File([invalidBytes], 'bad-encoding.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(invalidUtf8File);
+      expect(store.guidanceError()).toBe('File is not valid UTF-8');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('rejects path traversal or unsafe filenames', async () => {
+      const unsafeFile = new File(['valid content'], '../evil.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(unsafeFile);
+      expect(store.guidanceError()).toBe('Filename must be a safe basename');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('rejects control characters in content', async () => {
+      const controlCharFile = new File(['valid content\u0000with null'], 'null.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(controlCharFile);
+      expect(store.guidanceError()).toBe('Guidance contains control characters');
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.canSubmit()).toBe(false);
+    });
+
+    it('clears guidance on remove and omits repositoryGuidance from create payload', async () => {
+      const file = new File(['# Guidelines'], 'Claude.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(file);
+      expect(store.repositoryGuidance()).not.toBeNull();
+
+      store.clearGuidance();
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.guidanceError()).toBeNull();
+      expect(store.canSubmit()).toBe(true);
+
+      apiClientMock.request.mockResolvedValueOnce(mockCreatedJob);
+      await store.createReview();
+
+      expect(apiClientMock.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/reviews',
+          body: expect.not.objectContaining({
+            repositoryGuidance: expect.anything(),
+          }),
+        }),
+      );
+    });
+
+    it('submits exact request payload with repositoryGuidance and clears state upon success', async () => {
+      const file = new File(['# My Rules\nDo not bypass lint.'], 'Claude.md', { type: 'text/markdown' });
+      await store.setGuidanceFile(file);
+
+      apiClientMock.request.mockResolvedValueOnce(mockCreatedJob);
+      await store.createReview();
+
+      expect(apiClientMock.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'POST',
+          path: '/api/reviews',
+          body: expect.objectContaining({
+            repositoryGuidance: {
+              filename: 'Claude.md',
+              content: '# My Rules\nDo not bypass lint.',
+            },
+          }),
+        }),
+      );
+
+      // Cleared after successful creation
+      expect(store.repositoryGuidance()).toBeNull();
+      expect(store.guidanceError()).toBeNull();
+      expect(store.guidanceFile()).toBeNull();
+    });
+
+    it('prevents submission while reading guidance file', async () => {
+      store.readingGuidance.set(true);
+      expect(store.canSubmit()).toBe(false);
+      store.readingGuidance.set(false);
+      expect(store.canSubmit()).toBe(true);
+    });
+  });
 });

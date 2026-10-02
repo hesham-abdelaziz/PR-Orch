@@ -245,4 +245,70 @@ describe('NewReviewPageComponent', () => {
     expect(link).toBeTruthy();
     expect(link?.textContent).toContain('Open ongoing review');
   });
+
+  it('renders repository guidance file picker with required explanation and accessible attributes', () => {
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Repository Guidance (Optional)');
+    expect(el.textContent).toContain("Used by all models for this review's selected repository.");
+
+    const fileInput = el.querySelector<HTMLInputElement>('#guidance-file-input');
+    expect(fileInput).toBeTruthy();
+    expect(fileInput?.getAttribute('accept')).toContain('.md');
+    expect(fileInput?.getAttribute('accept')).toContain('.txt');
+    expect(fileInput?.getAttribute('aria-label')).toBe('Repository guidance file');
+
+    const pickerLabel = el.querySelector<HTMLLabelElement>('label[for="guidance-file-input"]');
+    expect(pickerLabel).toBeTruthy();
+    expect(pickerLabel?.textContent).toContain('Attach Guidance File');
+  });
+
+  it('displays attached guidance filename, formatted size, and remove button when file is attached', async () => {
+    const file = new File(['# Custom Architecture Rules\nFollow DDD.'], 'Claude.md', { type: 'text/markdown' });
+    await component.store.setGuidanceFile(file);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Claude.md');
+    expect(el.textContent).toContain('39 B');
+
+    const removeBtn = el.querySelector<HTMLButtonElement>('#remove-guidance-btn');
+    expect(removeBtn).toBeTruthy();
+    expect(removeBtn?.getAttribute('aria-label')).toBe('Remove repository guidance file');
+
+    // Clicking remove clears guidance
+    removeBtn?.click();
+    fixture.detectChanges();
+
+    expect(component.store.repositoryGuidance()).toBeNull();
+    expect(el.querySelector('#remove-guidance-btn')).toBeFalsy();
+    expect(el.querySelector('#guidance-file-input')).toBeTruthy();
+  });
+
+  it('renders concise error text and disables submission when an invalid file is selected', async () => {
+    component.store.setPrUrl('https://dev.azure.com/acme/project/_git/repo/pullrequest/4819');
+    component.store.prSummary.set(mockPrSummary);
+    component.store.setMainSelection({ provider: 'claude', model: 'claude-3-7-sonnet' });
+    component.store.setReviewerSelections([{ provider: 'codex', model: 'gpt-4o' }]);
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const startBtn = el.querySelector<HTMLButtonElement>('#start-review-btn');
+    expect(startBtn?.disabled).toBe(false);
+
+    const invalidFile = new File(['binary content'], 'script.exe', { type: 'application/octet-stream' });
+    await component.store.setGuidanceFile(invalidFile);
+    fixture.detectChanges();
+
+    expect(el.textContent).toContain('Guidance must be a .md or .txt file');
+    expect(startBtn?.disabled).toBe(true);
+
+    // Clicking clear error recovers form
+    const clearErrorBtn = el.querySelector<HTMLButtonElement>('.btn-clear-error');
+    expect(clearErrorBtn).toBeTruthy();
+    clearErrorBtn?.click();
+    fixture.detectChanges();
+
+    expect(component.store.guidanceError()).toBeNull();
+    expect(startBtn?.disabled).toBe(false);
+  });
 });

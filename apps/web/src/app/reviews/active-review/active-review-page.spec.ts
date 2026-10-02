@@ -1,4 +1,4 @@
-﻿import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { ActiveReviewPageComponent } from './active-review-page.component';
 import { ApiClientService } from '../../core/api/api-client.service';
@@ -309,4 +309,33 @@ describe('ActiveReviewPageComponent', () => {
     expect(verifierSection?.textContent).toContain('Main Verifier Unit');
   });
 
+  it('renders attached guidance filename, hash, and size when repositoryGuidance is present', async () => {
+    const jobWithGuidance: ReviewJob = {
+      ...mockActiveJob,
+      repositoryGuidance: {
+        filename: 'Claude.md',
+        sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        sizeBytes: 1520,
+      },
+    };
+
+    apiClientMock.request.mockResolvedValueOnce(jobWithGuidance);
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const guidanceCell = fixture.nativeElement.querySelector('#active-guidance-metadata');
+    expect(guidanceCell).toBeTruthy();
+    expect(guidanceCell?.textContent).toContain('Claude.md');
+    expect(guidanceCell?.textContent).toContain('e3b0c442');
+    expect(guidanceCell?.textContent).toContain('1.5 KB');
+  });
+
+  it('renders normally without guidance cell for historical jobs without repositoryGuidance', async () => {
+    apiClientMock.request.mockResolvedValueOnce(mockActiveJob);
+    await component.store.loadJob();
+    fixture.detectChanges();
+
+    const guidanceCell = fixture.nativeElement.querySelector('#active-guidance-metadata');
+    expect(guidanceCell).toBeNull();
+  });
 });

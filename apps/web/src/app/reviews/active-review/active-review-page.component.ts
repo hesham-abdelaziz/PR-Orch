@@ -141,6 +141,15 @@ import { ReviewerRunCardComponent } from './reviewer-run-card.component';
               {{ store.job()!.pullRequest.sourceBranch }}
             </span>
           </div>
+          @if (store.job()!.repositoryGuidance; as guidance) {
+            <div class="telemetry-cell" id="active-guidance-metadata">
+              <span class="telemetry-label">REPOSITORY GUIDANCE</span>
+              <span class="telemetry-val truncate" [title]="guidance.filename + ' (' + guidance.sha256 + ', ' + formatBytes(guidance.sizeBytes) + ')'">
+                {{ guidance.filename }} ({{ guidance.sha256.slice(0, 8) }}, {{ formatBytes(guidance.sizeBytes) }})
+                <span class="sr-only">{{ guidance.sha256 }} {{ guidance.sizeBytes }} bytes</span>
+              </span>
+            </div>
+          }
         </div>
 
         <!-- 8 Deterministic Pipeline Stages -->
@@ -448,6 +457,18 @@ import { ReviewerRunCardComponent } from './reviewer-run-card.component';
       font-family: $font-mono;
     }
 
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .ml-auto {
       margin-left: auto;
     }
@@ -498,5 +519,11 @@ export class ActiveReviewPageComponent implements OnInit, OnDestroy {
 
   toggleFailureBannerExpand(): void {
     this.isFailureBannerExpanded.update((v) => !v);
+  }
+
+  formatBytes(bytes: number): string {
+    if (!bytes || bytes <= 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
   }
 }

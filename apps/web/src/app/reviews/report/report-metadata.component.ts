@@ -77,6 +77,18 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
             {{ job.standards ? job.standards.filename + ' (v' + job.standards.versionId.slice(0, 8) + ')' : 'Detected library fallback guidance' }}
           </span>
         </div>
+
+        @if (job.repositoryGuidance; as guidance) {
+          <div class="meta-item" id="meta-guidance">
+            <span class="meta-label font-mono">REPOSITORY GUIDANCE</span>
+            <span class="meta-val font-mono" [title]="guidance.filename + ' (' + guidance.sha256 + ', ' + formatBytes(guidance.sizeBytes) + ')'">
+              <span class="guidance-name">{{ guidance.filename }}</span>
+              <span class="guidance-hash"> ({{ guidance.sha256.slice(0, 8) }})</span>
+              <span class="guidance-size"> · {{ formatBytes(guidance.sizeBytes) }}</span>
+              <span class="sr-only">{{ guidance.sha256 }} {{ guidance.sizeBytes }} bytes</span>
+            </span>
+          </div>
+        }
       </div>
 
       <!-- Findings tally strip -->
@@ -285,6 +297,18 @@ import { ReviewJob, VerifiedReport } from '@pr-orchestrator/contracts';
       @include truncate;
     }
 
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .font-mono {
       font-family: $font-mono;
     }
@@ -305,5 +329,11 @@ export class ReportMetadataComponent {
 
   reproducedCount(): number {
     return this.report?.findings ? this.report.findings.filter((f) => !!f.probe).length : 0;
+  }
+
+  formatBytes(bytes: number): string {
+    if (!bytes || bytes <= 0) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
   }
 }
