@@ -1,13 +1,14 @@
 {
   "name": "@pr-orchestrator/web",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "scripts": {
     "ng": "ng",
-    "start": "ng serve",
-    "build": "ng build",
-    "watch": "ng build --watch --configuration development",
-    "test": "ng test --no-watch",
-    "lint": "ng build --configuration development"
+    "generate:release-info": "node ../../scripts/generate-release-info.mjs",
+    "start": "node ../../scripts/generate-release-info.mjs && ng serve",
+    "build": "node ../../scripts/generate-release-info.mjs && ng build",
+    "watch": "node ../../scripts/generate-release-info.mjs && ng build --watch --configuration development",
+    "test": "node ../../scripts/generate-release-info.mjs && ng test --no-watch",
+    "lint": "node ../../scripts/generate-release-info.mjs && ng build --configuration development"
   },
   "private": true,
   "packageManager": "npm@11.16.0",
@@ -18,7 +19,7 @@
     "@angular/forms": "^22.0.0",
     "@angular/platform-browser": "^22.0.0",
     "@angular/router": "^22.0.0",
-    "@pr-orchestrator/contracts": "0.0.0",
+    "@pr-orchestrator/contracts": "0.1.0",
     "dompurify": "^3.2.4",
     "marked": "^15.0.7",
     "rxjs": "~7.8.0",

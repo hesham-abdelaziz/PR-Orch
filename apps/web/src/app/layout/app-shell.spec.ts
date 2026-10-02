@@ -49,6 +49,7 @@ describe('AppShellComponent', () => {
     expect(links).toContain('/reviews/history');
     expect(links).toContain('/standards');
     expect(links).toContain('/settings');
+    expect(links).toContain('/release-notes');
   });
 
   it('renders persistent read-only indicator in the top status bar', () => {

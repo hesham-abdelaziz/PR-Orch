@@ -57,6 +57,11 @@ export const routes: Routes = [
         loadComponent: () =>
           import('./settings/settings-page.component').then((m) => m.SettingsPageComponent),
       },
+      {
+        path: 'release-notes',
+        loadComponent: () =>
+          import('./release/release-notes-page.component').then((m) => m.ReleaseNotesPageComponent),
+      },
     ],
   },
   {

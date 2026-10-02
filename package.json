@@ -1,6 +1,6 @@
 {
   "name": "pr-review-orchestrator",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -12,8 +12,11 @@
   "scripts": {
     "start": "npm --workspace @pr-orchestrator/api run start:prod",
     "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:scripts && npm run test --workspaces --if-present",
+    "test:scripts": "node --test scripts/release.test.mjs",
     "test:contracts": "npm --workspace @pr-orchestrator/contracts run test",
+    "release": "node scripts/release.mjs",
+    "generate:release-info": "node scripts/generate-release-info.mjs",
     "build": "npm --workspace @pr-orchestrator/contracts run build && npm --workspace @pr-orchestrator/api run build && npm --workspace @pr-orchestrator/web run build",
     "e2e": "npm run e2e --workspaces --if-present"
   },

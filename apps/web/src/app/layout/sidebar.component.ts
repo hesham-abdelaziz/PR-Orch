@@ -1,6 +1,7 @@
 import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
+import { APP_VERSION } from '../release/release-info.generated';
 
 @Component({
   selector: 'app-sidebar',
@@ -12,7 +13,7 @@ import { RouterModule } from '@angular/router';
         <span class="brand-glyph">◈</span>
         <div class="brand-text">
           <span class="brand-name">PR Orchestrator</span>
-          <span class="brand-version">v0.1.0 • localhost</span>
+          <span class="brand-version">v{{ appVersion }} • localhost</span>
         </div>
       </div>
 
@@ -57,6 +58,17 @@ import { RouterModule } from '@angular/router';
         >
           <span class="nav-icon">⚙</span>
           <span class="nav-label">Settings</span>
+        </a>
+
+        <span class="nav-section-label">ABOUT</span>
+        <a
+          routerLink="/release-notes"
+          routerLinkActive="active"
+          class="nav-link"
+          id="nav-release-notes"
+        >
+          <span class="nav-icon">▤</span>
+          <span class="nav-label">Release Notes</span>
         </a>
       </nav>
 
@@ -213,4 +225,6 @@ import { RouterModule } from '@angular/router';
     }
   `],
 })
-export class SidebarComponent {}
+export class SidebarComponent {
+  readonly appVersion = APP_VERSION;
+}

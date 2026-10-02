@@ -84,3 +84,22 @@ npm test
 
 The `main` branch is the committed integration baseline. Ongoing work on other
 branches is included only after it has been integrated and committed to `main`.
+
+## Versioning and releases
+
+The root `package.json` version is the application version. It is shown in the
+dashboard, and `CHANGELOG.md` is published in the dashboard release notes.
+Workspace package versions and internal dependency versions stay in sync.
+
+```powershell
+npm run release -- patch "Short summary of the release"
+npm run release -- 1.0.0 "Explicit SemVer version"
+```
+
+The first argument is `patch`, `minor`, `major`, or an explicit SemVer version
+greater than the current one; the summary is required. The command updates all
+`package.json` files, `package-lock.json`, `CHANGELOG.md`, and the generated
+`apps/web/src/app/release/release-info.generated.ts`. Invalid input is rejected
+before anything is written. It never commits, tags, or publishes; review and
+commit the changes yourself. Frontend `start`, `build`, and `test` regenerate
+the release metadata automatically.
